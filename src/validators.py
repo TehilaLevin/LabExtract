@@ -1,4 +1,4 @@
-﻿"""Pure-Python validators and normalizers. Never guess: return None / False when unsure."""
+"""Pure-Python validators and normalizers. Never guess: return None / False when unsure."""
 import json
 import re
 from datetime import date
@@ -35,6 +35,7 @@ def validate_israeli_id(id_str: str) -> bool:
 # Quotes, geresh, gershayim and dashes are removed; matching is whole-token based.
 _PUNCT_RE = re.compile("[\"'`׳״“”‘’]")
 _DASH_RE = re.compile("[‐-―-]")
+_SEPARATORS_RE = re.compile(r"[()\[\],:;.]")
 _SPACES_RE = re.compile(r"\s+")
 
 # Common prefixes (already punctuation-free), longest first.
@@ -48,7 +49,7 @@ _PREFIXES = tuple(
 
 
 def _normalize_entity(text: str) -> str:
-    s = _PUNCT_RE.sub("", _DASH_RE.sub(" ", text or "")).lower()
+    s = _PUNCT_RE.sub("", _SEPARATORS_RE.sub(" ", _DASH_RE.sub(" ", text or ""))).lower()
     s = _SPACES_RE.sub(" ", s).strip()
     stripped = True
     while stripped and s:
@@ -65,18 +66,28 @@ def _normalize_entity(text: str) -> str:
 
 @lru_cache(maxsize=4)
 def _load_senders(path: str) -> tuple:
-    """Return (alias_map, canonical_names): normalized alias -> set of canonical names."""
+    """Return (alias_map, canonical_names, parent_of).
+
+    alias_map: normalized alias -> set of canonical names.
+    parent_of: campus canonical name -> parent canonical name (from "campus_of").
+    Every list-valued top-level key (hmos, hospitals, other_entities, ...) is a group.
+    """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     alias_map: dict = {}
     names = []
-    for group in ("hmos", "hospitals"):
-        for entry in data.get(group, []):
+    parent_of = {}
+    for group, entries in data.items():
+        if group.startswith("_") or not isinstance(entries, list):
+            continue
+        for entry in entries:
             names.append(entry["name"])
+            if entry.get("campus_of"):
+                parent_of[entry["name"]] = entry["campus_of"]
             for alias in [entry["name"], *entry.get("aliases", [])]:
                 key = _normalize_entity(alias)
                 if key:
                     alias_map.setdefault(key, set()).add(entry["name"])
-    return alias_map, tuple(names)
+    return alias_map, tuple(names), parent_of
 
 
 def list_approved_senders(senders_path: Union[str, Path, None] = None) -> list:
@@ -84,15 +95,27 @@ def list_approved_senders(senders_path: Union[str, Path, None] = None) -> list:
     return list(_load_senders(str(senders_path or DEFAULT_SENDERS_PATH))[1])
 
 
+def _resolve_campuses(found: set, parent_of: dict) -> set:
+    """A campus beats its parent; several campuses of one parent resolve to the parent."""
+    campuses = {n for n in found if n in parent_of}
+    found = found - {parent_of[c] for c in campuses}
+    parents = {parent_of.get(n) for n in found}
+    if len(found) > 1 and len(parents) == 1 and None not in parents:
+        return {parents.pop()}
+    return found
+
+
 def match_sending_entity(raw_text: str, senders_path: Union[str, Path, None] = None) -> Optional[str]:
     """Map raw text to a canonical approved sender, or None.
 
-    Exact (normalized) match first; otherwise an alias that appears as a whole-word
-    sequence inside the text. If the text matches more than one sender, return None.
+    Exact (normalized) match first; otherwise aliases that appear as whole-word
+    sequences inside the text. An alias nested inside a longer matched alias is
+    ignored (e.g. "השרון" inside "לב השרון"). If the text still matches more than
+    one sender, return None - never guess.
     """
     if not raw_text or not isinstance(raw_text, str):
         return None
-    alias_map, _ = _load_senders(str(senders_path or DEFAULT_SENDERS_PATH))
+    alias_map, _, parent_of = _load_senders(str(senders_path or DEFAULT_SENDERS_PATH))
     norm = _normalize_entity(raw_text)
     if not norm:
         return None
@@ -101,10 +124,21 @@ def match_sending_entity(raw_text: str, senders_path: Union[str, Path, None] = N
         return next(iter(hits)) if len(hits) == 1 else None
 
     padded = f" {norm} "
-    found = set()
+    spans = []  # (start, end, names)
     for alias, names in alias_map.items():
-        if f" {alias} " in padded:
+        needle = f" {alias} "
+        pos = padded.find(needle)
+        while pos != -1:
+            spans.append((pos, pos + len(needle), names))
+            pos = padded.find(needle, pos + 1)
+    found = set()
+    for start, end, names in spans:
+        nested = any(
+            s <= start and end <= e and (e - s) > (end - start) for s, e, _ in spans
+        )
+        if not nested:
             found |= names
+    found = _resolve_campuses(found, parent_of)
     return next(iter(found)) if len(found) == 1 else None
 
 

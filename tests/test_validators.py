@@ -1,4 +1,4 @@
-﻿import json
+import json
 from datetime import date
 
 import pytest
@@ -85,9 +85,43 @@ def test_every_canonical_name_matches_itself():
 def test_no_alias_is_shared_between_two_senders():
     from src.validators import DEFAULT_SENDERS_PATH, _load_senders
 
-    alias_map, _ = _load_senders(str(DEFAULT_SENDERS_PATH))
+    alias_map = _load_senders(str(DEFAULT_SENDERS_PATH))[0]
     shared = {a: n for a, n in alias_map.items() if len(n) > 1}
     assert shared == {}
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        # Rabin: parent unless a campus is named explicitly.
+        ("רבין", "רבין"),
+        ("מרכז רפואי רבין", "רבין"),
+        ("מרכז רפואי רבין - קמפוס בילינסון", "בילינסון"),
+        ("רבין השרון", "השרון"),
+        ("בילינסון", "בילינסון"),
+        ("רבין: בילינסון וגולדה השרון", "רבין"),
+        # A longer alias wins over a nested shorter one.
+        ("לב השרון", "לב השרון"),
+        ("הדסה בית שמש", "הדסה בית שמש"),
+        # Names exactly as printed on the sample forms.
+        ("המרכז הרפואי שמיר (אסף הרופא)", "אסף הרופא"),
+        ('צפון ע"ש ברוך פדה', "פוריה"),
+        ("בית החולים הציבורי אסותא אשדוד", "אסותא אשדוד"),
+        ('המרכז הרפואי הגריאטרי ביה"ח "שמואל הרופא"', "שמואל הרופא"),
+        ('צה"ל - חיל הרפואה', 'צה"ל'),
+        ("המרכז הלאומי לרפואה משפטית", "המרכז הלאומי לרפואה משפטית"),
+        ('רוזנבלט מעבדה רפואית בע"מ', "רוזנבלט"),
+        ("מרכז שניידר לרפואת ילדים", "שניידר"),
+        ('ע"ש אדית וולפסון', "וולפסון"),
+    ],
+)
+def test_match_sending_entity_extended_list(raw, expected):
+    assert match_sending_entity(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["אסותא", "האיטלקי", "צפון", "מחוז צפון"])
+def test_ambiguous_short_names_never_match(raw):
+    assert match_sending_entity(raw) is None
 
 
 def test_custom_senders_file(tmp_path):

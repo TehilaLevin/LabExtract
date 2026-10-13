@@ -42,3 +42,38 @@ FIELD_HINTS = {
     "commitment_numbers": 'May be labeled "דרישה"; in Leumit forms labeled "דגימה". Keep ALL numbers.',
     "sending_entity": "HMO or hospital that sent the form; must come from approved_senders.json.",
 }
+
+# Form types the extractor may report (id -> Hebrew label). Hospital / other-entity
+# forms are labelled with the sending entity at display time.
+FORM_TYPES = {
+    "meuhedet_commitment": "מאוחדת – התחייבות",
+    "clalit_form17": "כללית – טופס 17",
+    "clalit_lab_report": "כללית – דוח מעבדה מרכזית",
+    "maccabi_commitment": "מכבי – התחייבות",
+    "maccabi_lab_request": "מכבי – מעבדה שולחת",
+    "leumit_worklist": "לאומית – רשימת עבודה",
+    "sheba_system_printout": "שיבא – הדפסת מערכת",
+    "hospital_form": "טופס בית חולים",
+    "other_entity_form": "גורם אחר",
+    "unknown": "לא מזוהה",
+}
+# Form types whose display label is completed with the sending entity name.
+ENTITY_LABELLED_FORM_TYPES = frozenset({"hospital_form", "other_entity_form"})
+
+# Where the received date was read. Only these two sources are accepted (never guess
+# from admission / print / sampling dates).
+RECEIVED_DATE_SOURCES = ("received_stamp", "handwritten_near_central", "none")
+ACCEPTED_RECEIVED_DATE_SOURCES = frozenset({"received_stamp", "handwritten_near_central"})
+
+# Review flag reasons (field -> reason code), shown to the user in Hebrew.
+FLAG_REASONS = {
+    "missing": "חסר",
+    "low_confidence": "ביטחון נמוך",
+    "invalid_id": "ת\"ז לא תקינה",
+    "invalid_date": "תאריך לא תקין",
+    "date_out_of_range": "תאריך חריג",
+    "date_source_rejected": "מקור תאריך לא מאושר",
+    "sender_not_in_list": "לא ברשימה המאושרת",
+    "invalid_format": "פורמט לא תקין",
+    "extraction_failed": "החילוץ נכשל",
+}
