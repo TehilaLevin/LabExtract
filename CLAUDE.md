@@ -139,6 +139,10 @@ These forms represent real patient data in production. Therefore:
 - Delete files in data/temp/ after each run. Do not save uploads to disk beyond what processing needs.
 - Never commit sample files, output files or keys.
 
+Exception – chat reports on the sample files only:
+- The sample forms in data/samples/ contain fictitious data. When you report results on these sample files to me in the chat, show full names and full ID numbers (no masking), together with the PDF file name and page number, so I can verify them against the forms.
+- This exception applies ONLY to your chat reports about the sample files. It does not change any privacy rule in the app or the code: still no logging of personal data to the console or log files, temp files are deleted after each run, nothing personal is written to disk beyond what processing needs, and samples/outputs/keys are never committed.
+
 ## Step 6 – Tests and finish
 - Unit tests: ID checksum (valid + invalid), date normalization (incl. ambiguous dates), sender matching with aliases, multiple central/commitment numbers handling. Run pytest and show results.
 - Never write a real API key anywhere.

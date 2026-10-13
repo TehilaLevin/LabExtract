@@ -201,3 +201,24 @@ def test_quota_error_flags_forms_without_crashing(monkeypatch, fake_pages):
     forms = fs.split_forms(fake_pages)
     assert sum(len(f.pages) for f in forms) == 4
     assert all(fs.SPLIT_FLAG_FAILED in f.split_flags for f in forms)
+
+
+def test_orientation_uses_small_low_resolution_thumbnails(monkeypatch):
+    from PIL import Image
+
+    from src import extraction_engine
+
+    seen = {}
+
+    def fake_generate(contents, schema, **kwargs):
+        seen["res"] = kwargs.get("media_resolution")
+        seen["sizes"] = [c.inline_data.data for c in contents if not isinstance(c, str)]
+        return {"upright": "A", "confidence": 0.99}
+
+    monkeypatch.setattr(extraction_engine, "generate_json", fake_generate)
+    fs.detect_rotation(Image.new("RGB", (2480, 3508), "white"))  # full 300-dpi A4 page
+    assert seen["res"] == "low"
+    assert len(seen["sizes"]) == 4
+    from io import BytesIO
+    for data in seen["sizes"]:
+        assert max(Image.open(BytesIO(data)).size) <= fs.ORIENTATION_IMAGE_MAX_SIDE == 512

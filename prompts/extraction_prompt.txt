@@ -24,9 +24,31 @@ FIELDS
 ==========================================================================
 first_name, last_name (שם פרטי / שם משפחה) - the PATIENT (מטופל / מבוטח / נבדק / חולה), never the doctor, signer or clerk.
 - Labels: "שם פרטי", "שם משפחה", "שם המטופל", "שם החולה", "שם הנבדק", "שם ומשפחה", "שם:".
-- Names are often handwritten (blue pen) or on a printed patient sticker.
-- If separate first/last fields exist, use them. If the full name is in ONE field, split it by that form's convention
-  (e.g. "שם ומשפחה" = first name then family name) but give confidence <= 0.6 for both, because the split is uncertain.
+- Names are often handwritten (blue pen, Hebrew cursive) or on a printed patient sticker.
+- script (per name field): "printed" (typed / machine-printed), "handwritten", or "unknown".
+- HANDWRITTEN NAMES - highest risk of a confident wrong answer:
+  Hebrew cursive letters look different from print (e.g. cursive א, ל, ש, ר, ס, ם). Read letter by letter.
+  Do NOT produce a plausible-looking name from unclear strokes. If you would have to guess even one letter,
+  return null for that name with confidence below 0.5. A null name is reviewed by a person; an invented name is not.
+- Confidence for first_name / last_name is about READING the text only (not about the split - that is name_order_basis).
+- LABEL / VALUE DIRECTION (Hebrew is right-to-left): a field's value is written to the LEFT of its label, after the colon.
+  Each value belongs to the label immediately to its RIGHT - never to the label on its left.
+  Example of one printed row, reading right-to-left:  [שם פרטי :] [value A]   [שם משפחה :] [value B]
+  => first_name = value A, last_name = value B.
+- name_locations: every place on the form where the patient's name is written (up to 3: e.g. the labeled name fields AND a
+  patient sticker). For each: page (1-based within this form), box_2d = [ymin, xmin, ymax, xmax] normalized 0-1000 on that page,
+  covering the name AND its label(s); kind = "labeled_fields" | "single_field" | "patient_sticker" | "other".
+  If the name appears nowhere, return [].
+- name_order_basis - how you decided which word is the first name and which is the family name:
+  "separate_fields": the form has separate labeled fields (e.g. "שם פרטי" and "שם משפחה") - use them (see LABEL / VALUE DIRECTION).
+  "form_convention": the full name is in ONE field, and that field is listed in the KNOWN NAME ORDERS below - split by that order.
+  "unclear": the full name is in one field that is NOT listed below (or the layout is ambiguous, e.g. handwriting with no label).
+    Still split it by the most likely order (Israeli forms usually write the family name first), and answer "unclear" - a
+    reviewer will check it. Never answer "form_convention" for a layout that is not in the list.
+- Multi-word names: keep compound family names (e.g. "בן דוד", "אבו חצירה") or two first names together as written; if you
+  cannot tell where the first name ends and the family name starts, answer "unclear".
+KNOWN NAME ORDERS (single-field names):
+{{NAME_ORDER_RULES}}
 
 id_number (מספר תעודת זהות) - the patient's Israeli ID.
 - Labels: "ת.ז.", "ת\"ז", "מספר זהות", "מס' זהות", "תעודת זהות", "מ.ז.", "ID / PASS".
@@ -95,14 +117,15 @@ maccabi_lab_request - Maccabi lab printout "קופ\"ח מכבי - מעבדה ש�
   commitment: "דרישה:" (e.g. an 8-digit number). Often several GLC stickers (one per tube) - return all. Sender: מכבי.
 
 leumit_worklist - Leumit "דוח רשימת עבודה לפי בדיקה" (LabOS), logo "לאומית".
-  commitment: "דגימה:" (9 digits). Patient: "שם ומשפחה" (single field - split with confidence <= 0.6), "ת.ז.".
+  commitment: "דגימה:" (9 digits). Patient: "שם ומשפחה" (single field: first name, then family name), "ת.ז.".
   "גורם שולח:" there is a Leumit branch => sender לאומית.
 
 sheba_system_printout - screenshot/printout of Sheba's hospital system: grey form "נתוני ביקור", fields "סוג מקרה", "גורם מפנה",
   and a table "קשרי ביטוח - סקירה" with columns "מבטח", "שם מבטח", "מספר התחייבות". Often scanned sideways.
   commitment: every non-empty value in the "מספר התחייבות" column (there can be 2-3 rows => several numbers).
   sender: the HMO from "גורם מפנה" / "שם מבטח" (e.g. "קופ\"ח מאוחדת" => מאוחדת). NOT Sheba.
-  central number and received date: handwritten ("מספר מרכזי" + number, date below). Patient name/ID: header line, often handwritten.
+  central number and received date: handwritten ("מספר מרכזי" + number, date below). Patient name/ID: header line, often
+  handwritten; the name there is LAST name first.
 
 hospital_form - any hospital's referral / commitment / lab-request form. Known layouts:
   - Rambam (רמב"ם): commitment = "מספר דגימה" ("מספר הדגימה מהווה מספר התחייבות"); the same number may also appear on a bottom sticker - count once.

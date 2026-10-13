@@ -5,7 +5,10 @@ Two Gemini steps:
    model picks the upright one. Measured on the 48 sample pages: asking the model for a
    rotation angle directly was right on 1 of 11 rotated pages (at 0.95 "confidence");
    picking among candidates was right on 16/16 per page, but 46/48 when 4 pages were
-   batched in one request - so it stays one page per request.
+   batched in one request - so it stays one page per request. Candidates are 512px
+   low-resolution thumbnails (~1.2k prompt tokens per page vs ~2.2k at 700px/medium),
+   verified 48/48. The step is kept because extracting rotated pages WITHOUT rotation
+   was clearly worse on the samples (wrong central/commitment numbers, invented senders).
 2. Splitting (one request per SPLIT_BATCH_SIZE upright pages of the same file): does
    each page start a new form or continue the previous page?
 The grouping itself (group_pages) is pure Python and unit-tested.
@@ -91,7 +94,9 @@ ORIENTATION_SCHEMA = {
 }
 # Candidate letter -> clockwise rotation that produced it.
 _CANDIDATES = {"A": 0, "B": 90, "C": 180, "D": 270}
-_ORIENTATION_IMAGE_MAX_SIDE = 700
+# Orientation needs only the page layout, not legible digits: small low-resolution
+# thumbnails keep this step cheap. Full resolution is used for extraction only.
+ORIENTATION_IMAGE_MAX_SIDE = 512
 
 
 @dataclass
@@ -183,8 +188,8 @@ def detect_rotation(image: Image.Image) -> tuple:
     contents: list = [ORIENTATION_PROMPT]
     for letter, rotation in _CANDIDATES.items():
         contents += [f"Version {letter}:",
-                     image_part(fix_rotation(image, rotation), _ORIENTATION_IMAGE_MAX_SIDE)]
-    data = generate_json(contents, ORIENTATION_SCHEMA, high_resolution=False)
+                     image_part(fix_rotation(image, rotation), ORIENTATION_IMAGE_MAX_SIDE)]
+    data = generate_json(contents, ORIENTATION_SCHEMA, media_resolution="low", purpose="orientation")
     letter = data.get("upright")
     if letter not in _CANDIDATES:
         return 0, 0.0
@@ -204,7 +209,7 @@ def classify_batch(images: list, context: Optional[Image.Image] = None) -> list:
         contents += ["CONTEXT page (the page before PAGE 1):", image_part(context, _CONTEXT_PAGE_MAX_SIDE)]
     for i, img in enumerate(images, start=1):
         contents += [f"PAGE {i}:", image_part(img, config.SPLIT_IMAGE_MAX_SIDE)]
-    data = generate_json(contents, SPLIT_SCHEMA, high_resolution=False)
+    data = generate_json(contents, SPLIT_SCHEMA, media_resolution="medium", purpose="split")
 
     by_index = {}
     for item in data.get("pages") or []:

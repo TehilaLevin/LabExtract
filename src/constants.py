@@ -75,5 +75,34 @@ FLAG_REASONS = {
     "date_source_rejected": "מקור תאריך לא מאושר",
     "sender_not_in_list": "לא ברשימה המאושרת",
     "invalid_format": "פורמט לא תקין",
+    "name_order_unclear": "סדר שם לא ודאי",
+    "name_mismatch": "קריאה חוזרת שונה",
+    "name_conflict": "סתירה בין מופעי השם",
+    "name_unverified": "שם בכתב יד לא אומת",
+    "commitment_is_id": "מספר זהה לת\"ז הוסר",
     "extraction_failed": "החילוץ נכשל",
 }
+
+# How the first/last name split was decided. Names are flagged for review only when
+# the order is genuinely unclear ("unclear"), not merely because the name sat in one field.
+NAME_ORDER_BASES = ("separate_fields", "form_convention", "unclear")
+
+# Known name orders for single-field names, rendered into the extraction prompt.
+# (where the name appears, order). Anything not listed here is "unclear".
+# Validate / extend these against data/ground_truth/ground_truth.csv.
+NAME_ORDER_CONVENTIONS = (
+    ('sheba_system_printout: the patient name in the header line', "LAST name first, then first name"),
+    ('leumit_worklist: the field "שם ומשפחה" (literally "name and family")', "FIRST name first, then last name"),
+    ('A printed hospital admission/patient sticker ("מדבקת מטופל") where "שם:" appears together with '
+     '"מ.ז." / "אב:" / "מקרה:" / "קופ\\"ח:"', "LAST name first, then first name"),
+)
+
+# How each name was written on the form (reported by the extractor per field).
+NAME_SCRIPTS = ("printed", "handwritten", "unknown")
+# Where a patient name appears (the extractor reports up to MAX_NAME_LOCATIONS boxes).
+NAME_LOCATION_KINDS = ("labeled_fields", "single_field", "patient_sticker", "other")
+MAX_NAME_LOCATIONS = 3
+
+# Shown next to an unverified reading of a handwritten name. A suggestion is NEVER an
+# approved value: it is kept apart from Record.values and is never exported as one.
+SUGGESTION_LABEL = "הצעה – לא מאומת"
