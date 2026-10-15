@@ -41,10 +41,24 @@ MAX_PARALLEL_REQUESTS = 4
 EXTRACTION_IMAGE_MAX_SIDE = 2400
 SPLIT_IMAGE_MAX_SIDE = 1400
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    return default if not value else value in ("1", "true", "yes")
+
+
+# Targeted re-read of flagged number fields from high-resolution crops (at most one extra
+# request per form). FIELD_REREAD=false turns it off, e.g. for a baseline evaluation run.
+FIELD_REREAD_ENABLED = _env_flag("FIELD_REREAD", True)
+# Which page version name / field crops are cut from: "original" (scanned pixels, only the
+# deskew geometry applied, so boxes still line up) or "processed" (contrast/brightness fixed,
+# the version the full-page pass saw). CROP_SOURCE=processed switches back for comparison.
+CROP_SOURCE = os.getenv("CROP_SOURCE", "original").strip().lower()
+
 DATA_DIR = BASE_DIR / "data"
 # DEV ONLY - never enable in production. Caches Gemini responses on disk (they may
 # contain personal data) so repeated development runs on the same images cost nothing.
-DEV_CACHE = os.getenv("DEV_CACHE", "").strip().lower() in ("1", "true", "yes")
+DEV_CACHE = _env_flag("DEV_CACHE", False)
 DEV_CACHE_DIR = DATA_DIR / "dev_cache"
 TEMP_DIR = DATA_DIR / "temp"
 OUTPUT_DIR = DATA_DIR / "output"

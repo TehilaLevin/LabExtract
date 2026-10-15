@@ -81,7 +81,20 @@ FLAG_REASONS = {
     "name_unverified": "שם בכתב יד לא אומת",
     "commitment_is_id": "מספר זהה לת\"ז הוסר",
     "extraction_failed": "החילוץ נכשל",
+    "unreadable": "קיים בטופס אך לא קריא",
+    "reread_conflict": "קריאה חוזרת סותרת",
+    "reread_replaced": "הוחלף בקריאה חוזרת – לבדיקה",
+    "reread_single_reading": "נקרא רק בקריאה חוזרת – לבדיקה",
 }
+
+# Per-field reading status reported by the extractor: lets "not on the form" (missing)
+# be told apart from "on the form but not legible" (unreadable).
+FIELD_STATUSES = ("read", "unreadable", "not_present")
+
+# Fields that get a targeted, high-resolution second reading when flagged (names have
+# their own verification). The extractor reports up to MAX_FIELD_LOCATIONS boxes for them.
+REREAD_FIELDS = ("id_number", "central_numbers", "received_date", "commitment_numbers")
+MAX_FIELD_LOCATIONS = {"id_number": 2, "central_numbers": 4, "received_date": 2, "commitment_numbers": 3}
 
 # How the first/last name split was decided. Names are flagged for review only when
 # the order is genuinely unclear ("unclear"), not merely because the name sat in one field.

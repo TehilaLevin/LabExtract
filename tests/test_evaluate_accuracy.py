@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -54,11 +55,138 @@ def test_summary_counts_missing_record_as_all_failed():
 
 def test_report_never_prints_personal_values(capsys):
     bad = dict(GOOD, first_name="יסמין", id_number="999", central_numbers="111111")
-    ev.print_report(ev.summarize([(TRUTH, bad)]))
+    ev.print_report(ev.summarize([(TRUTH, bad)]), show_values=True)
     out = capsys.readouterr().out
     assert "יסמין" not in out and "999" not in out and "11223344" not in out
     assert "first_name: mismatch" in out
-    assert "expected=937309;937310 got=111111" in out  # non-personal fields show values
+    assert "expected=937309;937310 got=111111" in out  # non-personal fields show values on request
+
+
+def test_report_prints_no_values_by_default(capsys):
+    bad = dict(GOOD, central_numbers="111111")
+    ev.print_report(ev.summarize([(TRUTH, bad)]))
+    out = capsys.readouterr().out
+    assert "111111" not in out and "937309" not in out
+    assert "central_numbers: mismatch" in out
+
+
+def test_saved_summary_has_counts_only_and_comparison(capsys):
+    bad = dict(GOOD, central_numbers="111111", first_name="יסמין")
+    base = ev.counts_only(ev.summarize([(TRUTH, bad)]), truth_rows=[TRUTH])
+    now = ev.counts_only(ev.summarize([(TRUTH, GOOD)]), {"central_numbers": {"agreed": 1}}, truth_rows=[TRUTH])
+    text = json.dumps(base, ensure_ascii=False) + json.dumps(now, ensure_ascii=False)
+    assert "111111" not in text and "יסמין" not in text and "11223344" not in text and "ישראל" not in text
+    assert ev.print_comparison(base, now) is True
+    out = capsys.readouterr().out
+    assert "central_numbers      0/1 -> 1/1 (+1)" in out and "wrong_unflagged 1->0" in out
+    assert "Fixed: f.pdf p13 first_name" in out
+
+
+@pytest.mark.parametrize("change, reason", [
+    (lambda s: s.update(labels_sha256="other"), "different ground-truth rows or labels"),
+    (lambda s: s.update(rows=[["g.pdf", "1"]]), "different ground-truth rows or labels"),
+    (lambda s: s.update(run={"model_sha256": "x", "complete": True}), "different model"),
+    (lambda s: s.update(run={"complete": False}), "baseline run is incomplete"),
+])
+def test_comparison_refuses_different_runs(capsys, change, reason):
+    now = ev.counts_only(ev.summarize([(TRUTH, GOOD)]), truth_rows=[TRUTH],
+                         info={"model_sha256": "m", "complete": True})
+    base = json.loads(json.dumps(now))
+    change(base)
+    assert ev.print_comparison(base, now) is False
+    assert reason in capsys.readouterr().out
+
+
+def test_breakdown_separates_flagged_missing_and_silent_errors():
+    values = dict(GOOD, first_name="", id_number="99999999", central_numbers="111111", sending_entity="מכבי")
+    flags = {"id_number": "invalid_id", "commitment_numbers": "low_confidence"}
+    b = ev.summarize([(TRUTH, values, None, flags), (TRUTH, None)])["breakdown"]
+    assert b["first_name"] == dict.fromkeys(ev.OUTCOMES, 0) | {"missing": 1, "no_record": 1}
+    assert b["id_number"]["wrong_flagged"] == 1
+    assert b["central_numbers"]["wrong_unflagged"] == 1             # a silent error
+    assert b["commitment_numbers"]["correct_flagged"] == 1           # right, but still shown for review
+    assert b["received_date"]["correct"] == 1                        # expected empty, got empty
+
+
+def test_validation_never_makes_a_value_correct():
+    # A checksum-valid ID that differs from the label is wrong, flagged or not.
+    out = ev.summarize([(TRUTH, dict(GOOD, id_number="000000018"), None, {})])
+    assert out["per_field"]["id_number"] == (0, 1) and out["breakdown"]["id_number"]["wrong_unflagged"] == 1
+
+
+def test_id_leading_zero_is_the_same_id():
+    assert ev.normalize_value("id_number", "011223344") == ev.normalize_value("id_number", "11223344")
+    assert ev.normalize_value("id_number", "11223344") != ev.normalize_value("id_number", "11223345")
+
+
+def test_labels_fingerprint_changes_with_any_label():
+    assert ev.labels_fingerprint([TRUTH]) == ev.labels_fingerprint([dict(TRUTH)])
+    assert ev.labels_fingerprint([TRUTH]) != ev.labels_fingerprint([dict(TRUTH, commitment_numbers="251494")])
+
+
+def test_multi_page_rows_send_every_page_and_map_by_first_page(monkeypatch):
+    from types import SimpleNamespace
+
+    sent = {}
+
+    def fake_subset(source, pages):
+        sent["pages"] = pages
+        return b"%PDF"
+
+    def fake_process(files, progress=None):
+        # subset pages: 1 -> p4, 2 -> p5 (one 2-page form), 3 -> p9
+        return [SimpleNamespace(metadata={"page_numbers": "1, 2"}, tag="A"),
+                SimpleNamespace(metadata={"page_numbers": "3"}, tag="B")]
+
+    monkeypatch.setattr(ev, "_subset_pdf", fake_subset)
+    monkeypatch.setattr("src.record_builder.process_files", fake_process)
+    rows = [dict(TRUTH, page_numbers="4,5"), dict(TRUTH, page_numbers="9")]
+    results = ev.run_engine(rows)
+    assert sent["pages"] == [4, 5, 9]
+    assert [rec.tag for _, rec in results] == ["A", "B"]
+
+
+@pytest.fixture
+def guarded(monkeypatch):
+    from src import config
+    from src import extraction_engine as ee
+
+    monkeypatch.setattr(config, "DEV_CACHE", False)
+    monkeypatch.setattr(config, "DEV_CACHE_DIR", Path(__file__).parent / "_no_such_cache_dir")
+    monkeypatch.setattr(ee, "_generate_with_transport_retry", ee._generate_with_transport_retry)  # restored after
+    monkeypatch.setattr(ee, "generate_json", ee.generate_json)                                    # restored after
+    monkeypatch.setattr(ee, "get_client", lambda: pytest.fail("live API call attempted"))
+    monkeypatch.setattr(config, "GEMINI_MODEL", "test-model", raising=False)
+    return ee
+
+
+def test_cache_only_never_calls_the_api(guarded):
+    from src import config
+
+    ee = guarded
+    stats = {"cache_misses": 0}
+    ev._block_live_calls(stats)
+    with pytest.raises(ee.GeminiError, match="cache-only"):
+        ee.generate_json(["hello"], {"type": "OBJECT"}, purpose="extract")
+    assert stats["cache_misses"] == 1 and stats["misses_by_stage"] == {"extract": 1} and config.DEV_CACHE is True
+
+
+def test_request_budget_stops_live_calls(guarded, monkeypatch):
+    ee = guarded
+
+    class _Response:
+        text = '{"ok": true}'
+
+    calls = []
+    monkeypatch.setattr(ee, "_generate_with_transport_retry", lambda contents, cfg: calls.append(1) or _Response())
+    stats = ev.new_stats()
+    ev.install_request_guard(stats, max_requests=2)
+    ee.generate_json(["a"], {"type": "OBJECT"}, purpose="extract")
+    ee.generate_json(["b"], {"type": "OBJECT"}, purpose="reread_fields")
+    with pytest.raises(ee.GeminiQuotaError, match="max-requests"):
+        ee.generate_json(["c"], {"type": "OBJECT"}, purpose="extract")
+    assert len(calls) == 2 and stats["budget_exhausted"] is True
+    assert stats["live_by_stage"] == {"extract": 1, "reread_fields": 1}
 
 
 def test_ground_truth_file_has_names_for_the_five_forms():

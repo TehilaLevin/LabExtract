@@ -32,3 +32,49 @@ model, prompt, schema and images. It is **off by default** and must **never be e
 ```
 
 (or delete the `data/dev_cache/` folder). Also make sure `DEV_CACHE` is not set to `true` in `.env`.
+
+## Targeted re-read of number fields
+
+The full-page pass sees each page downscaled to 2400 px, so small digits on GLC stickers, stamps and
+handwriting get few pixels. The extractor therefore also reports *where* the ID, central numbers, received
+date and commitment numbers are (`field_locations`) and whether an empty field is `unreadable` or
+`not_present`. When one of these fields is flagged (missing, unreadable, low confidence, failed validation)
+and has a location, it is cropped from the full-resolution page (original pixels, deskew geometry only) and
+re-read in **one extra request per form at most**. The crop reading never sees the full-page value.
+
+The crop reading is one more reading, not the truth. Deterministic rules (see `record_builder.py`) decide:
+agreement keeps the value (only for the ID, where checksum + agreement may clear a low-confidence flag);
+a missing value is filled only from a valid, confident crop reading and stays flagged; a format/range failure
+of a central/commitment number or date may be replaced by a valid crop reading (still flagged); an ID that was
+read is never replaced (a failed checksum does not prove a misread: passports, fictitious sample IDs);
+two valid but different readings empty the field (`reread_conflict`). Other readings are kept in memory as
+`Record.alternatives` for the reviewer. `FIELD_REREAD=false` turns the step off; `CROP_SOURCE=processed`
+crops from the preprocessed page instead of the original.
+
+Diagnostics (`record_builder.diagnostic_lines`) explain every flag with codes only: field status, confidence,
+number of boxes, re-read outcome, image size and preprocessing steps - never values or file names in logs.
+
+## Evaluation
+
+```bash
+# Baseline: the engine of another commit, scored by THIS scorer, no API calls (dev cache only).
+git worktree add ../labextract-baseline main
+.venv/Scripts/python evaluation/evaluate_accuracy.py --engine-root ../labextract-baseline --cache-only \
+    --save-summary data/output/baseline_summary.json
+# Candidate, live (costs money; at most N requests), compared with the baseline:
+DEV_CACHE=true .venv/Scripts/python evaluation/evaluate_accuracy.py --max-requests 30 \
+    --save-summary data/output/candidate_summary.json --compare data/output/baseline_summary.json
+# Original vs preprocessed pages, offline:
+.venv/Scripts/python evaluation/compare_preprocessing.py FILE.pdf [--save data/temp/compare]
+```
+
+The report splits every field into correct / correct but flagged / missing / wrong but flagged /
+**wrong and not flagged** (silent errors). Correctness comes only from the ground truth, never from
+validation. A comparison is refused when rows, labels or model differ, or when a run is incomplete.
+
+No values are printed by default (`--show-values` prints non-personal fields only). The ground truth has only
+5 rows, each with one central and one commitment number, so the results are preliminary. To extend it, add rows
+to `data/ground_truth/ground_truth.csv` (one per form: `source_file`, first `page_numbers`, all fields; list
+fields separated by `;`; an empty cell means "no value on the form"). Label from the page image only, verify each
+row twice, and use fictitious/sanitized forms only. Prefer forms with several GLC stickers or commitment numbers,
+handwritten central numbers and dates, phone photos and dark or skewed scans.

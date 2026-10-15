@@ -19,6 +19,12 @@ Confidence (0-1) per field:
 - 0.50-0.79: readable but some doubt (messy handwriting, faint stamp, unsure which number is meant).
 - below 0.50: you could not read it or could not find it -> value must be null / [].
 
+status (per field) - tells a reviewer WHY a field is empty:
+- "read": you read the value (any confidence).
+- "unreadable": the field IS on the form (label, sticker, stamp or handwriting is there) but you cannot read it fully
+  (blurred, smudged, cut off, covered, too small). The value must then be null / [].
+- "not_present": the field does not appear on this form. The value must then be null / [].
+
 ==========================================================================
 FIELDS
 ==========================================================================
@@ -93,6 +99,14 @@ commitment_numbers (מספר התחייבות) - LIST. The payment commitment / 
 - Never use: case/visit/admission numbers (מקרה, מס' ביקור, אשפוז, מס' קבלה), CPT / service codes (קוד שירות, קוד CPT, מק"ט),
   phone/fax numbers, IDs, doctor license numbers, central (GLC) numbers.
 - If the form has no commitment number, return [].
+
+field_locations - WHERE the number fields are, so a reviewer program can re-read them at higher resolution.
+- One entry per place where id_number, central_numbers, received_date or commitment_numbers is written: field, page
+  (1-based within this form), box_2d = [ymin, xmin, ymax, xmax] normalized 0-1000 on that page.
+- The box covers the value AND its label (or the whole GLC sticker / the whole "התקבל" stamp / the handwritten central
+  number with the date below it). Keep it tight: do not box half the page.
+- Report the box ALSO when the value is unreadable (status "unreadable") - that is when it matters most.
+- Several central / commitment numbers in different places => one entry per place. Omit fields that are not present.
 
 ==========================================================================
 FORM TYPES (form_type) AND WHERE THE FIELDS ARE

@@ -1,18 +1,26 @@
 """Light Pillow preprocessing: auto-contrast, brightness fix for dark scans, basic deskew.
 
 The original image is always kept next to the processed one, in case preprocessing
-hurts readability. Colour is preserved on purpose: blue handwriting and coloured
-stamps are easier to read in colour.
+hurts readability. `aligned` is the original with only the geometry change (deskew)
+applied, so boxes reported on the processed image map 1:1 onto untouched pixels:
+targeted re-reads crop from it. Colour is preserved on purpose: blue handwriting and
+coloured stamps are easier to read in colour.
 """
+import math
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageOps
 
 # Mean luminance (0-255) below which a scan is treated as dark.
 DARK_MEAN_THRESHOLD = 150
 TARGET_MEAN = 200
-MAX_BRIGHTNESS_FACTOR = 1.6
+# Dark scans are brightened with a gamma curve, not a linear multiply: multiplying by
+# 1.6 saturates everything above ~160 to pure white, which erased faint pencil digits on
+# white GLC stickers in a synthetic test (stroke contrast 55 -> 0). Gamma keeps 255 at
+# 255 and stays strictly increasing, so faint strokes keep some contrast.
+MIN_GAMMA = 0.4              # strongest brightening allowed (out = 255 * (in/255) ** gamma)
 
 # Deskew search: small angles only (large rotations are handled by fix_rotation).
 DESKEW_MAX_ANGLE = 5.0
@@ -28,7 +36,12 @@ VALID_ROTATIONS = (0, 90, 180, 270)
 class PreprocessResult:
     original: Image.Image
     processed: Image.Image
-    steps: list = field(default_factory=list)  # e.g. ["autocontrast", "brighten x1.30", "deskew -1.50"]
+    steps: list = field(default_factory=list)  # e.g. ["autocontrast", "brighten gamma 0.62", "deskew -1.50"]
+    aligned: Optional[Image.Image] = None       # original pixels, processed geometry (see module doc)
+
+    @property
+    def crop_source(self) -> Image.Image:
+        return self.aligned if self.aligned is not None else self.original
 
 
 def mean_luminance(image: Image.Image) -> float:
@@ -77,16 +90,28 @@ def preprocess(image: Image.Image) -> PreprocessResult:
 
     mean = mean_luminance(img)
     if mean < DARK_MEAN_THRESHOLD:
-        factor = min(MAX_BRIGHTNESS_FACTOR, TARGET_MEAN / max(mean, 1.0))
-        img = ImageEnhance.Brightness(img).enhance(factor)
-        steps.append(f"brighten x{factor:.2f}")
+        gamma = brighten_gamma(mean)
+        img = img.point(_gamma_lut(gamma) * 3)
+        steps.append(f"brighten gamma {gamma:.2f}")
 
+    aligned = image if image.mode == "RGB" else image.convert("RGB")
     angle = estimate_skew(img)
     if angle:
         img = img.rotate(angle, resample=Image.BICUBIC, expand=True, fillcolor="white")
+        aligned = aligned.rotate(angle, resample=Image.BICUBIC, expand=True, fillcolor="white")
         steps.append(f"deskew {angle:+.2f}")
 
-    return PreprocessResult(original=original, processed=img, steps=steps)
+    return PreprocessResult(original=original, processed=img, steps=steps, aligned=aligned)
+
+
+def brighten_gamma(mean: float) -> float:
+    """Gamma that moves a mean luminance of `mean` to about TARGET_MEAN (never below MIN_GAMMA)."""
+    m = min(max(mean, 1.0), 254.0) / 255.0
+    return max(MIN_GAMMA, min(1.0, math.log(TARGET_MEAN / 255.0) / math.log(m)))
+
+
+def _gamma_lut(gamma: float) -> list:
+    return [round(255 * (i / 255) ** gamma) for i in range(256)]
 
 
 def fix_rotation(image: Image.Image, rotate_clockwise: int) -> Image.Image:

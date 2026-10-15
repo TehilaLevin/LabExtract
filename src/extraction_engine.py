@@ -22,14 +22,17 @@ from PIL import Image
 from src import config
 from src.constants import (
     FIELD_KEYS,
+    FIELD_STATUSES,
     FORM_TYPES,
     LIST_FIELDS,
+    MAX_FIELD_LOCATIONS,
     MAX_NAME_LOCATIONS,
     NAME_LOCATION_KINDS,
     NAME_ORDER_BASES,
     NAME_ORDER_CONVENTIONS,
     NAME_SCRIPTS,
     RECEIVED_DATE_SOURCES,
+    REREAD_FIELDS,
 )
 from src.image_preprocessor import resize_for_model
 from src.validators import list_approved_senders
@@ -127,7 +130,8 @@ def _record_usage(response, purpose: str) -> None:
 def get_usage(purpose: Optional[str] = None) -> dict:
     """Token totals for live (non-cached) calls since the last reset - all purposes, or one.
 
-    Counts only, never content. Purposes: "extract", "verify_names", "orientation", "split".
+    Counts only, never content. Purposes: "extract", "verify_names", "reread_fields", "orientation",
+    "split".
     """
     with _usage_lock:
         rows = [_usage.get(purpose, {})] if purpose else list(_usage.values())
@@ -267,6 +271,7 @@ class FieldResult:
     confidence: float
     source: Optional[str] = None    # received_date only: one of RECEIVED_DATE_SOURCES
     script: Optional[str] = None    # first_name / last_name only: one of NAME_SCRIPTS
+    status: Optional[str] = None    # one of FIELD_STATUSES; None = not reported
 
 
 @dataclass
@@ -277,6 +282,7 @@ class ExtractionResult:
     error: Optional[str] = None
     name_order_basis: str = "unclear"  # one of NAME_ORDER_BASES
     name_locations: list = field(default_factory=list)  # [{"page", "box", "kind"}], box = 0-1000
+    field_locations: list = field(default_factory=list)  # [{"field", "page", "box"}], REREAD_FIELDS only
 
 
 def _value_schema(key: str, sender_names: list) -> dict:
@@ -300,8 +306,9 @@ def build_schema(sender_names: list) -> dict:
         }
     }
     for key in FIELD_KEYS:
-        field_props = {"value": _value_schema(key, sender_names), "confidence": {"type": "NUMBER"}}
-        required = ["value", "confidence"]
+        field_props = {"value": _value_schema(key, sender_names), "confidence": {"type": "NUMBER"},
+                       "status": {"type": "STRING", "enum": list(FIELD_STATUSES)}}
+        required = ["value", "confidence", "status"]
         if key == "received_date":
             field_props["received_date_source"] = {"type": "STRING", "enum": list(RECEIVED_DATE_SOURCES)}
             required.append("received_date_source")
@@ -329,6 +336,19 @@ def build_schema(sender_names: list) -> dict:
                     "propertyOrdering": ["page", "box_2d", "kind"],
                 },
             }
+    props["field_locations"] = {
+        "type": "ARRAY",
+        "items": {
+            "type": "OBJECT",
+            "properties": {
+                "field": {"type": "STRING", "enum": list(REREAD_FIELDS)},
+                "page": {"type": "INTEGER"},
+                "box_2d": {"type": "ARRAY", "items": {"type": "INTEGER"}},
+            },
+            "required": ["field", "page", "box_2d"],
+            "propertyOrdering": ["field", "page", "box_2d"],
+        },
+    }
     return {
         "type": "OBJECT",
         "properties": props,
@@ -381,7 +401,9 @@ def parse_extraction(data: dict) -> ExtractionResult:
     for key in FIELD_KEYS:
         raw = data.get(key) if isinstance(data.get(key), dict) else {}
         value = _clean_list(raw.get("value")) if key in LIST_FIELDS else _clean_scalar(raw.get("value"))
-        result = FieldResult(value=value, confidence=_confidence(raw.get("confidence")))
+        status = raw.get("status")
+        result = FieldResult(value=value, confidence=_confidence(raw.get("confidence")),
+                             status=status if status in FIELD_STATUSES else None)
         if key == "received_date":
             source = raw.get("received_date_source")
             result.source = source if source in RECEIVED_DATE_SOURCES else "none"
@@ -392,27 +414,53 @@ def parse_extraction(data: dict) -> ExtractionResult:
     basis = data.get("name_order_basis")
     return ExtractionResult(form_type, _confidence(ft.get("confidence")), fields,
                             name_order_basis=basis if basis in NAME_ORDER_BASES else "unclear",
-                            name_locations=_parse_locations(data.get("name_locations")))
+                            name_locations=_parse_locations(data.get("name_locations")),
+                            field_locations=_parse_field_locations(data.get("field_locations")))
+
+
+def _parse_box(item) -> Optional[tuple]:
+    """(page, (ymin, xmin, ymax, xmax)) for a well-formed item: page >= 1, box within 0-1000."""
+    if not isinstance(item, dict):
+        return None
+    box, page = item.get("box_2d"), item.get("page")
+    if not (isinstance(page, int) and not isinstance(page, bool) and page >= 1
+            and isinstance(box, list) and len(box) == 4):
+        return None
+    try:
+        y0, x0, y1, x1 = (int(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= y0 < y1 <= 1000 and 0 <= x0 < x1 <= 1000):
+        return None
+    return page, (y0, x0, y1, x1)
 
 
 def _parse_locations(raw) -> list:
-    """Keep only well-formed boxes: page >= 1, [ymin, xmin, ymax, xmax] within 0-1000."""
+    """Keep only well-formed name boxes (see _parse_box), at most MAX_NAME_LOCATIONS."""
     out = []
     for item in raw if isinstance(raw, list) else []:
-        if not isinstance(item, dict):
-            continue
-        box, page = item.get("box_2d"), item.get("page")
-        if not (isinstance(page, int) and page >= 1 and isinstance(box, list) and len(box) == 4):
-            continue
-        try:
-            y0, x0, y1, x1 = (int(v) for v in box)
-        except (TypeError, ValueError):
-            continue
-        if not (0 <= y0 < y1 <= 1000 and 0 <= x0 < x1 <= 1000):
+        parsed = _parse_box(item)
+        if parsed is None:
             continue
         kind = item.get("kind") if item.get("kind") in NAME_LOCATION_KINDS else "other"
-        out.append({"page": page, "box": (y0, x0, y1, x1), "kind": kind})
+        out.append({"page": parsed[0], "box": parsed[1], "kind": kind})
     return out[:MAX_NAME_LOCATIONS]
+
+
+def _parse_field_locations(raw) -> list:
+    """Well-formed boxes of REREAD_FIELDS, at most MAX_FIELD_LOCATIONS per field, duplicates dropped."""
+    out, per_field = [], {}
+    for item in raw if isinstance(raw, list) else []:
+        parsed = _parse_box(item)
+        key = item.get("field") if isinstance(item, dict) else None
+        if parsed is None or key not in REREAD_FIELDS:
+            continue
+        loc = {"field": key, "page": parsed[0], "box": parsed[1]}
+        if loc in out or per_field.get(key, 0) >= MAX_FIELD_LOCATIONS[key]:
+            continue
+        per_field[key] = per_field.get(key, 0) + 1
+        out.append(loc)
+    return out
 
 
 def empty_result(error: str) -> ExtractionResult:
@@ -547,17 +595,25 @@ def crop_name_regions(images: list, locations: list) -> list:
         if loc["page"] > len(images):
             continue
         img = images[loc["page"] - 1]
-        w, h = img.size
-        y0, x0, y1, x1 = (v / 1000 for v in loc["box"])
-        bw, bh = (x1 - x0) * w, (y1 - y0) * h
-        pad_x = max(NAME_CROP_MIN_PAD_PX, bw * NAME_CROP_PAD_X)
-        pad_y = max(NAME_CROP_MIN_PAD_PX, bh * NAME_CROP_PAD_Y)
-        box = (max(0, int(x0 * w - pad_x)), max(0, int(y0 * h - pad_y)),
-               min(w, int(x1 * w + pad_x)), min(h, int(y1 * h + pad_y)))
-        if box[2] - box[0] < 10 or box[3] - box[1] < 10:
+        box = padded_pixel_box(img.size, loc["box"], NAME_CROP_PAD_X, NAME_CROP_PAD_Y, NAME_CROP_MIN_PAD_PX)
+        if box is None:
             continue
         crops.append((loc["kind"], img.crop(box)))
     return crops
+
+
+def padded_pixel_box(size: tuple, box: tuple, pad_x: float, pad_y: float, min_pad: int) -> Optional[tuple]:
+    """Map a 0-1000 [ymin, xmin, ymax, xmax] box to a padded (left, top, right, bottom) pixel box,
+    clamped to the image. None when the clamped box is degenerate (under 10 px on a side)."""
+    w, h = size
+    y0, x0, y1, x1 = (v / 1000 for v in box)
+    bw, bh = (x1 - x0) * w, (y1 - y0) * h
+    px, py = max(min_pad, bw * pad_x), max(min_pad, bh * pad_y)
+    out = (max(0, int(x0 * w - px)), max(0, int(y0 * h - py)),
+           min(w, int(x1 * w + px)), min(h, int(y1 * h + py)))
+    if out[2] - out[0] < 10 or out[3] - out[1] < 10:
+        return None
+    return out
 
 
 def verify_names(images: list, extraction: ExtractionResult) -> NameCheck:
