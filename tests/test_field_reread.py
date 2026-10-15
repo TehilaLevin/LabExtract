@@ -277,12 +277,46 @@ def test_low_confidence_reread_does_not_confirm_id():
     assert rec.flags["id_number"] == "low_confidence"
 
 
-def test_id_that_fails_checksum_is_never_replaced_by_crop_reading():
-    # A failed checksum does not prove a misread (passports; the fictitious sample IDs).
-    rec = _rec(_ext(id_number={"value": INVALID_ID, "confidence": 0.9}), _recheck(_reading("id_number", [VALID_ID])))
-    assert rec.values["id_number"] == INVALID_ID
+@pytest.mark.parametrize("orig", [INVALID_ID, "0011223344"])   # bad check digit / 10 digits
+def test_id_failing_check_digit_replaced_by_valid_crop_reading(orig):
+    rec = _rec(_ext(id_number={"value": orig, "confidence": 0.9}), _recheck(_reading("id_number", [VALID_ID])))
+    assert rec.values["id_number"] == VALID_ID
+    assert rec.flags["id_number"] == "reread_replaced"           # still flagged for review
+    assert rec.alternatives["id_number"] == [orig]               # the full-page reading stays visible
+    assert rec.diagnostics["fields"]["id_number"]["reread"] == "replaced"
+
+
+@pytest.mark.parametrize("crop, expected_value", [
+    (OTHER_VALID_ID, ""),         # two valid, different readings: emptied (conflict), never swapped
+    (INVALID_ID, VALID_ID),       # crop fails the check digit: the valid ID stays
+])
+def test_id_passing_check_digit_is_never_replaced(crop, expected_value):
+    rec = _rec(_ext(id_number={"value": VALID_ID, "confidence": 0.6}), _recheck(_reading("id_number", [crop])))
+    assert rec.values["id_number"] == expected_value and rec.values["id_number"] != crop
     assert rec.flags["id_number"] == "reread_conflict"
-    assert rec.alternatives["id_number"] == [VALID_ID]          # shown to the reviewer, never approved
+    assert crop in rec.alternatives["id_number"]
+
+
+def test_confident_valid_id_is_not_selected_for_reread():
+    ext = _ext(id_number={"value": VALID_ID, "confidence": 0.95})
+    assert "id_number" not in fr.select_reread_fields(ext, rb.field_flags(ext, today=TODAY)[1])
+
+
+@pytest.mark.parametrize("reading", [
+    _reading("id_number", ["000000027"]),                # crop also fails the check digit
+    _reading("id_number", [VALID_ID], conf=0.6),          # crop passes, but not confidently
+])
+def test_id_not_replaced_without_a_confident_valid_crop_reading(reading):
+    rec = _rec(_ext(id_number={"value": INVALID_ID, "confidence": 0.9}), _recheck(reading))
+    assert rec.values["id_number"] == INVALID_ID and rec.flags["id_number"] in ("invalid_id", "reread_conflict")
+    assert rec.alternatives["id_number"] == reading.values
+
+
+def test_id_never_replaced_by_a_central_or_commitment_number():
+    ext = _ext(id_number={"value": INVALID_ID, "confidence": 0.9},
+               commitment_numbers={"value": [VALID_ID], "confidence": 0.95})
+    rec = _rec(ext, _recheck(_reading("id_number", [VALID_ID])))
+    assert rec.values["id_number"] == INVALID_ID and "id_number" in rec.flags
 
 
 def test_invalid_date_replaced_by_valid_crop_reading_but_still_flagged():
@@ -290,13 +324,6 @@ def test_invalid_date_replaced_by_valid_crop_reading_but_still_flagged():
     rec = _rec(ext, _recheck(_reading("received_date", ["21-02-2026"])))
     assert rec.values["received_date"] == "21/02/2026" and rec.flags["received_date"] == "reread_replaced"
     assert rec.alternatives["received_date"] == ["31-02-2026"]   # the original reading stays visible
-
-
-def test_invalid_id_and_invalid_crop_reading_keeps_original():
-    rec = _rec(_ext(id_number={"value": INVALID_ID, "confidence": 0.9}),
-               _recheck(_reading("id_number", ["000000027"])))
-    assert rec.values["id_number"] == INVALID_ID and rec.flags["id_number"] == "invalid_id"
-    assert rec.alternatives["id_number"] == ["000000027"]
 
 
 def test_disagreement_between_two_valid_readings_empties_the_field():
@@ -400,10 +427,10 @@ def test_diagnostics_explain_flags_without_values():
     rec = rb.build_record(_form(), ext, recheck=recheck, today=TODAY,
                           page_info=[{"page": 3, "size": [2480, 3508], "steps": ["autocontrast"]}])
     d = rec.diagnostics["fields"]
-    assert d["id_number"]["reread"] == "mismatch" and d["id_number"]["flag"] == "reread_conflict"
+    assert d["id_number"]["reread"] == "replaced" and d["id_number"]["flag"] == "reread_replaced"
     assert d["central_numbers"]["reread"] == "agreed" and d["central_numbers"]["crops"] == 1
     text = "\n".join(rb.diagnostic_lines(rec))
-    assert "size=2480x3508 preprocessing=autocontrast" in text and "id_number: flag=reread_conflict" in text
+    assert "size=2480x3508 preprocessing=autocontrast" in text and "id_number: flag=reread_replaced" in text
     for secret in (VALID_ID, INVALID_ID, "937309", "ישראל", "batch.pdf"):
         assert secret not in text
     assert "batch.pdf p3" in "\n".join(rb.diagnostic_lines(rec, include_source=True))
@@ -481,8 +508,8 @@ def test_process_files_rereads_once_per_flagged_form(monkeypatch, tmp_path, enab
     monkeypatch.setattr(ee, "generate_json", fake_generate)
     records = rb.process_files([("a.png", _png_bytes())])
     assert calls["reread"] == expected_calls
-    assert records[0].values["id_number"] == INVALID_ID
-    assert records[0].alternatives == ({"id_number": [VALID_ID]} if enabled else {})
+    assert records[0].values["id_number"] == (VALID_ID if enabled else INVALID_ID)
+    assert records[0].alternatives == ({"id_number": [INVALID_ID]} if enabled else {})
     assert "id_number" in records[0].flags
     assert not list(tmp_path.iterdir())
 

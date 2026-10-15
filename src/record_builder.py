@@ -198,11 +198,12 @@ def build_record(form, extraction, name_check=None, threshold: float = config.CO
 #   confident readings clear a "low_confidence" flag; other fields have no check strong enough.
 # - The full page had nothing: the crop value is shown only if it passes validation with
 #   confidence >= threshold, and stays flagged "reread_single_reading".
-# - The full page failed validation, the crop passes: for format / range checks (central and
-#   commitment numbers, dates) the crop value replaces it, flagged "reread_replaced" (lists only
-#   when no number would be lost). An ID read on the full page is NEVER replaced: a failed
-#   checksum does not prove a misread (passports, foreign IDs; seen on the fictitious sample IDs,
-#   which were read correctly yet fail the checksum) - the crop reading becomes an alternative.
+# - The full page failed validation, the crop passes: the crop value replaces it, flagged
+#   "reread_replaced", the full-page reading kept as an alternative (lists only when no number
+#   would be lost). For the ID this means: the full-page ID fails the check digit AND the crop
+#   reading passes it (with confidence >= threshold, and not equal to a central / commitment
+#   number). An ID that passes the check digit is never replaced. (Seen on sample page 13: the
+#   full page misread the ID, the crop read it correctly.)
 # - Both pass validation but differ: the field is emptied and flagged "reread_conflict".
 # - Otherwise the full-page value stays, flagged "reread_conflict" when either reading passes
 #   validation. A failed second pass never overwrites a better-supported value.
@@ -210,7 +211,7 @@ def build_record(form, extraction, name_check=None, threshold: float = config.CO
 # field stays flagged: model confidence is a heuristic, not a probability of being right.
 
 REREAD_CONFIRM_FIELDS = frozenset({"id_number"})
-REREAD_REPLACE_FIELDS = frozenset({"central_numbers", "commitment_numbers", "received_date"})
+REREAD_REPLACE_FIELDS = frozenset({"id_number", "central_numbers", "commitment_numbers", "received_date"})
 _KEEP = object()  # flag override sentinel: leave the flag computed from the effective value
 
 
