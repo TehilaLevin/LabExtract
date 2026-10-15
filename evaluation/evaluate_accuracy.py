@@ -17,6 +17,15 @@ Breakdown per field: correct (not flagged) | correct but flagged for review | mi
 a value, got none) | wrong but flagged | WRONG AND NOT FLAGGED (a silent error - the dangerous
 case) | no record (the form was not produced).
 
+Label UNREADABLE (any case) marks a field a human cannot read with confidence from the image
+itself. Then an empty, flagged output is correct; an empty unflagged output is "missing"; ANY
+value - flagged or not - is a guess and counts as a silent error. It applies to the whole field
+(for a list, use it when not every number can be read).
+
+Optional columns: tags (e.g. "handwritten;multi_central") and split ("tune" / "test"). Results
+are also reported per split and per tag; --split / --tag evaluate only the matching rows. Tune
+prompts and rules on "tune" rows only; run "test" rows only to measure a finished change.
+
 Comparing two versions on the same forms: save a baseline summary, then --compare it. The
 scorer, ground truth, samples and dev cache always come from THIS tree; --engine-root DIR runs
 the engine code of another tree (e.g. a git worktree of the baseline commit), so both versions
@@ -85,7 +94,9 @@ DEFAULT_GROUND_TRUTH = DATA_DIR / "ground_truth" / "ground_truth.csv"
 SAMPLES_DIR = DATA_DIR / "samples"
 SENDERS_PATH = DATA_DIR / "reference" / "approved_senders.json"
 PERSONAL_FIELDS = frozenset({"first_name", "last_name", "id_number"})
-OUTCOMES = ("correct", "correct_flagged", "missing", "wrong_flagged", "wrong_unflagged", "no_record")
+UNREADABLE_LABEL = "UNREADABLE"
+SPLITS = ("tune", "test")
+OUTCOMES =("correct", "correct_flagged", "missing", "wrong_flagged", "wrong_unflagged", "no_record")
 _NAME_PUNCT_RE = re.compile(r"[\"'`׳״.,:;()\-]")
 
 
@@ -111,14 +122,25 @@ def normalize_value(key: str, value) -> object:
     return text
 
 
+def is_unreadable_label(value) -> bool:
+    """Ground-truth label for a field a human cannot read with confidence from the image itself."""
+    return isinstance(value, str) and value.strip().upper() == UNREADABLE_LABEL
+
+
 def compare_row(truth: dict, values: dict) -> dict:
-    """field -> True/False for one form."""
-    return {k: normalize_value(k, truth.get(k)) == normalize_value(k, values.get(k)) for k in FIELD_KEYS}
+    """field -> True/False for one form (an UNREADABLE label never matches here: see _outcome)."""
+    return {k: (not is_unreadable_label(truth.get(k)))
+            and normalize_value(k, truth.get(k)) == normalize_value(k, values.get(k)) for k in FIELD_KEYS}
 
 
-def _outcome(ok: bool, got, flagged: bool, has_record: bool) -> str:
+def _outcome(ok: bool, got, flagged: bool, has_record: bool, unreadable: bool = False) -> str:
     if not has_record:
         return "no_record"
+    if unreadable:
+        # Nobody can read it: empty + flagged is the right answer; any value is a guess.
+        if got:
+            return "wrong_unflagged"
+        return "correct_flagged" if flagged else "missing"
     if ok:
         return "correct_flagged" if flagged else "correct"
     if not got:
@@ -144,10 +166,12 @@ def summarize(results: list) -> dict:
         flags = (item[3] if len(item) > 3 else None) or {}
         outcome = compare_row(truth, values) if values is not None else {k: False for k in FIELD_KEYS}
         for k, ok in outcome.items():
+            got = "" if values is None else values.get(k, "")
+            result = _outcome(ok, normalize_value(k, got), k in flags, values is not None,
+                              unreadable=is_unreadable_label(truth.get(k)))
+            ok = result in ("correct", "correct_flagged")
             per_field[k][1] += 1
             per_field[k][0] += ok
-            got = "" if values is None else values.get(k, "")
-            result = _outcome(ok, normalize_value(k, got), k in flags, values is not None)
             breakdown[k][result] += 1
             suggestion = suggestions.get(k) if values is not None and not got else None
             suggestion_ok = None
@@ -166,8 +190,40 @@ def summarize(results: list) -> dict:
 # ------------------------------------------------------------------ running the engine
 
 def load_ground_truth(path: Path) -> list:
+    """Labelled rows. Optional columns (older files lack them): tags (e.g. "handwritten;multi") and
+    split ("tune" / "test"; anything else counts as "unassigned")."""
     with open(path, encoding="utf-8-sig", newline="") as f:
-        return [row for row in csv.DictReader(f) if row.get("source_file")]
+        rows = [row for row in csv.DictReader(f) if row.get("source_file")]
+    for row in rows:
+        row["tags"] = row.get("tags") or ""
+        row["split"] = row.get("split") or ""
+    return rows
+
+
+def row_tags(row: dict) -> list:
+    return [t.strip().lower() for t in re.split(r"[;|,]", row.get("tags") or "") if t.strip()]
+
+
+def row_split(row: dict) -> str:
+    split = (row.get("split") or "").strip().lower()
+    return split if split in SPLITS else "unassigned"
+
+
+def select_rows(rows: list, split: Optional[str] = None, tag: Optional[str] = None) -> list:
+    return [r for r in rows if (split is None or row_split(r) == split.lower())
+            and (tag is None or tag.lower() in row_tags(r))]
+
+
+def summarize_groups(results: list) -> dict:
+    """{"split": {name: summary}, "tag": {name: summary}} over summarize()-style result items.
+    A row with several tags counts in each of its tag groups."""
+    by_split, by_tag = OrderedDict(), OrderedDict()
+    for item in results:
+        by_split.setdefault(row_split(item[0]), []).append(item)
+        for tag in row_tags(item[0]) or ["untagged"]:
+            by_tag.setdefault(tag, []).append(item)
+    return {"split": {k: summarize(v) for k, v in sorted(by_split.items())},
+            "tag": {k: summarize(v) for k, v in sorted(by_tag.items())}}
 
 
 def _subset_pdf(source: Path, pages: list) -> bytes:
@@ -308,6 +364,29 @@ def print_report(summary: dict, show_values: bool = False) -> None:
         print(f"  {f['source_file']} p{f['page']} {f['field']}: {detail}")
 
 
+def _group_counts(summary: dict) -> dict:
+    per_field = summary["per_field"]
+    totals = Counter()
+    for b in summary["breakdown"].values():
+        totals.update(b)
+    return {"rows": next(iter(per_field.values()))[1] if per_field else 0,
+            "ok": sum(ok for ok, _ in per_field.values()), "total": sum(n for _, n in per_field.values()),
+            "silent_errors": totals["wrong_unflagged"], "missing": totals["missing"],
+            "per_field": {k: list(v) for k, v in per_field.items()}}
+
+
+def print_groups(groups: dict) -> None:
+    for kind, label in (("split", "Per split"), ("tag", "Per tag (a row counts once per tag)")):
+        if not groups.get(kind):
+            continue
+        print(f"\n{label}:")
+        for name, summary in groups[kind].items():
+            c = _group_counts(summary)
+            fields = " ".join(f"{k.split('_')[0]}={ok}/{n}" for k, (ok, n) in c["per_field"].items())
+            print(f"  {name:14s} rows={c['rows']:<3d} all={c['ok']}/{c['total']}  silent_errors={c['silent_errors']}"
+                  f"  missing={c['missing']}   {fields}")
+
+
 def labels_fingerprint(truth_rows: list) -> str:
     """SHA-256 over all labelled rows (not reversible to single values): same labels <=> same hash."""
     h = hashlib.sha256()
@@ -346,9 +425,10 @@ def run_info(stats: dict, records: list, cache_only: bool) -> dict:
 
 
 def counts_only(summary: dict, outcomes: Optional[dict] = None, truth_rows: Optional[list] = None,
-                info: Optional[dict] = None) -> dict:
+                info: Optional[dict] = None, groups: Optional[dict] = None) -> dict:
     """What --save-summary writes: counts, (file, page, field) of failures, fingerprints - no values."""
     return {"per_field": {k: list(v) for k, v in summary["per_field"].items()},
+            "groups": {kind: {name: _group_counts(s) for name, s in g.items()} for kind, g in (groups or {}).items()},
             "breakdown": summary.get("breakdown", {}),
             "failed": sorted([f["source_file"], str(f["page"]), f["field"]] for f in summary["failures"]),
             "reread": {k: dict(v) for k, v in (outcomes or {}).items()},
@@ -395,17 +475,21 @@ def main() -> None:
     parser.add_argument("--save-summary", type=Path, help="write counts (no values) to this JSON file")
     parser.add_argument("--compare", type=Path, help="baseline summary JSON from --save-summary")
     parser.add_argument("--show-values", action="store_true", help="print values of non-personal fields")
+    parser.add_argument("--split", choices=SPLITS + ("unassigned",), help="evaluate only rows of this split")
+    parser.add_argument("--tag", help="evaluate only rows carrying this tag")
     args = parser.parse_args()
-    truth_rows = load_ground_truth(args.ground_truth)
+    truth_rows = select_rows(load_ground_truth(args.ground_truth), args.split, args.tag)
     if not truth_rows:
-        sys.exit(f"No rows in {args.ground_truth}")
+        sys.exit(f"No matching rows in {args.ground_truth}")
     stats = new_stats()
     install_request_guard(stats, cache_only=args.cache_only, max_requests=args.max_requests)
     results = run_engine(truth_rows, progress=lambda s, d, t: print(f"  [{s}] {d}/{t}"))
     records = [rec for _, rec in results]
-    summary = summarize([(t, rec.values if rec else None, rec.suggestions if rec else None,
-                          rec.flags if rec else None) for t, rec in results])
+    items = [(t, rec.values if rec else None, rec.suggestions if rec else None, rec.flags if rec else None)
+             for t, rec in results]
+    summary, groups = summarize(items), summarize_groups(items)
     print_report(summary, show_values=args.show_values)
+    print_groups(groups)
     outcomes = reread_outcomes(records)
     if outcomes:
         print("\nTargeted re-read outcomes (per field):")
@@ -425,7 +509,7 @@ def main() -> None:
                   f"output={usage['output_tokens']}")
     if not info["complete"]:
         print("Results are INCOMPLETE (cache misses, request budget or failed forms): do not compare them.")
-    current = counts_only(summary, outcomes, truth_rows, info)
+    current = counts_only(summary, outcomes, truth_rows, info, groups)
     if args.save_summary:
         args.save_summary.write_text(json.dumps(current, ensure_ascii=False, indent=1), encoding="utf-8")
     if args.compare:

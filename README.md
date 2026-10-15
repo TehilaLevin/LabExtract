@@ -73,8 +73,27 @@ The report splits every field into correct / correct but flagged / missing / wro
 validation. A comparison is refused when rows, labels or model differ, or when a run is incomplete.
 
 No values are printed by default (`--show-values` prints non-personal fields only). The ground truth has only
-5 rows, each with one central and one commitment number, so the results are preliminary. To extend it, add rows
-to `data/ground_truth/ground_truth.csv` (one per form: `source_file`, first `page_numbers`, all fields; list
-fields separated by `;`; an empty cell means "no value on the form"). Label from the page image only, verify each
-row twice, and use fictitious/sanitized forms only. Prefer forms with several GLC stickers or commitment numbers,
-handwritten central numbers and dates, phone photos and dark or skewed scans.
+5 rows, so the results are preliminary.
+
+### Labeling ground truth
+
+`data/ground_truth/labeling_worksheet.csv` lists every sample page with a *suggested* form type, tags, split and
+priority (no field values - verify every suggestion against the image). For each page you label, add a row to
+`data/ground_truth/ground_truth.csv`:
+
+- `page_numbers`: all pages of the form (`4,5` for a two-page form). List fields: numbers separated by `;`.
+- An empty cell means "this field is not on the form". `UNREADABLE` means "it is there, but a person cannot read
+  it with confidence from the image": then only an empty, flagged output scores as correct, and any value counts
+  as a silent error (a guess). Use it for the whole field (a list with one unreadable number is `UNREADABLE`).
+- `received_date` only from the "התקבל" stamp or handwritten next to the central number - otherwise empty.
+  `sending_entity` as its canonical name in `approved_senders.json`. ID digits exactly as written.
+- `tags`: `;`-separated (vocabulary in the worksheet), `split`: `tune` or `test`.
+- Label from the image at full zoom, never from engine output; ideally two people label independently and
+  resolve differences.
+
+Avoiding leakage: change prompts, rules and form hints only while looking at `tune` rows
+(`--split tune`); run `--split test` only to measure a finished change, and never adjust anything to fix a
+specific test failure. The prompt was written while looking at all sample pages, so even the sample `test`
+split is optimistic - an honest number needs new, unseen forms. Meuhedet, Leumit and Maccabi lab-request forms
+occur only once in the samples (already labelled, `tune`), and the samples hold no real multi-page form and no
+phone photo: the test set needs new forms of these kinds.

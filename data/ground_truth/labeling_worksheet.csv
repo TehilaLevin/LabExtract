@@ -1,0 +1,49 @@
+source_file,page_numbers,status,priority,suggested_split,suggested_form_type,suggested_tags,notes
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",1,labelled,-,tune,meuhedet_commitment,printed_numbers;stamp,
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",2,to_label,1,test,sheba_system_printout,sheba_printout;handwritten_central,central number and date handwritten
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",3,labelled,-,tune,sheba_system_printout,sheba_printout;rotated;handwritten_central;no_received_date,
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",4,to_label,1,tune,sheba_system_printout,sheba_printout;handwritten_central,
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",5,to_label,1,test,clalit_form17,printed_numbers;stamp,
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",6,to_label,2,test,clalit_lab_report,printed_numbers;stamp,
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",7,to_label,2,test,sheba_system_printout,sheba_printout;handwritten_central,
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",8,labelled,-,tune,leumit_worklist,printed_numbers;stamp,
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",9,labelled,-,tune,maccabi_lab_request,multi_central;stamp,
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",10,to_label,2,test,maccabi_commitment,handwritten_central;partial_form,"footer ""1/2"": second page not in the samples"
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",11,to_label,2,tune,sheba_system_printout,sheba_printout;rotated;handwritten_central,
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",12,to_label,2,tune,hospital_form,printed_numbers;handwritten_date,Carmel LabOS report (verify)
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",13,labelled,-,tune,hospital_form,printed_numbers;no_received_date,Shaare Zedek
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",14,to_label,1,test,hospital_form,rotated;multi_central;handwritten,"rotated hospital form, two GLC stickers (verify hospital)"
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",15,to_label,2,tune,hospital_form,printed_numbers;stamp,Rambam
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",16,to_label,2,test,hospital_form,faint_stamp;overlapping,Rambam; stamp overlaps text
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",17,to_label,1,tune,other_entity_form,no_commitment;handwritten_date,Rosenblatt
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",18,to_label,2,test,other_entity_form,no_commitment;faint_stamp;handwritten,Rosenblatt
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",19,to_label,1,test,hospital_form,low_quality;handwritten_central,"Rambam, faxed copy"
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",20,to_label,2,test,other_entity_form,faint_stamp;printed_numbers,IDF MediTik; received stamp faded
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",21,to_label,2,tune,other_entity_form,no_commitment;handwritten_date,Rosenblatt
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",22,to_label,2,tune,hospital_form,rotated;handwritten,rotated form (verify hospital)
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",23,to_label,2,test,hospital_form,rotated;handwritten,same layout as p22 (verify)
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",24,to_label,1,test,other_entity_form,multi_central;faint_stamp;old_printed_dates,Forensic Medicine; printed dates from old years (trap)
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",25,to_label,1,test,sheba_system_printout,sheba_printout;rotated;multi_commitment;handwritten_central,several rows in the commitment table
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",26,to_label,1,tune,hospital_form,short_commitment;faint_stamp;skewed,Shamir / Assaf Harofeh
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",1,to_label,2,test,hospital_form,short_commitment;handwritten_date,Shamir / Assaf Harofeh
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",2,to_label,2,test,hospital_form,stamp;printed_numbers,Schneider
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",3,to_label,1,test,hospital_form,faint_stamp;handwritten;partial_form,"Assuta Ashdod; ""Page 1 of 2"""
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",4,to_label,2,tune,hospital_form,faint_stamp;printed_numbers,Bnei Zion
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",5,to_label,2,test,hospital_form,faint_stamp;printed_numbers,Bnei Zion
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",6,to_label,1,tune,hospital_form,handwritten_commitment;handwritten_date,Barzilai
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",7,to_label,2,test,hospital_form,handwritten_commitment;handwritten_date,Barzilai
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",8,to_label,2,tune,hospital_form,handwritten_date,Hillel Yaffe
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",9,to_label,1,test,hospital_form,faint_stamp,Hillel Yaffe
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",10,to_label,1,tune,hospital_form,handwritten_commitment;faint_stamp,Clalit hospital handwritten form (HaSharon)
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",11,to_label,2,test,hospital_form,handwritten_commitment;faint_stamp,Clalit hospital handwritten form (HaSharon)
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",12,to_label,1,test,hospital_form,multi_central;printed_numbers;trap_number,Wolfson; BIOHAZARD sticker is not a commitment
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",13,to_label,2,tune,hospital_form,handwritten_date;printed_numbers,Wolfson
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",14,to_label,1,tune,hospital_form,rotated;alphanumeric;stamp,Laniado
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",15,to_label,1,test,hospital_form,rotated;alphanumeric;low_quality,Laniado; dark grey scan
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",16,to_label,1,tune,hospital_form,skewed;stamp,Meir
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",17,to_label,1,test,hospital_form,skewed;stamp,Meir
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",18,to_label,2,tune,hospital_form,faint_stamp;printed_numbers,Kaplan
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",19,to_label,2,test,hospital_form,handwritten_date;printed_numbers,Kaplan
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",20,to_label,1,test,sheba_system_printout,sheba_printout;rotated;handwritten_central,
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",21,to_label,1,tune,sheba_system_printout,sheba_printout;rotated;handwritten_central,
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",22,to_label,2,test,sheba_system_printout,sheba_printout;rotated;handwritten_central,

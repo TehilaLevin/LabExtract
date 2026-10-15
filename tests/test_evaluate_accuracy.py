@@ -216,3 +216,63 @@ def test_report_shows_suggestion_counts_without_values(capsys):
     out = capsys.readouterr().out
     assert "correct suggestions: 0   wrong suggestions: 1" in out
     assert "first_name: mismatch (suggestion wrong)" in out and "יסמין" not in out
+
+
+# ---- UNREADABLE labels ------------------------------------------------------------------
+
+UNREADABLE_TRUTH = dict(TRUTH, id_number="UNREADABLE", central_numbers="unreadable ")
+
+
+def test_unreadable_label_empty_and_flagged_is_correct():
+    values = dict(GOOD, id_number="", central_numbers="")
+    out = ev.summarize([(UNREADABLE_TRUTH, values, None, {"id_number": "unreadable", "central_numbers": "missing"})])
+    assert out["per_field"]["id_number"] == (1, 1) and out["per_field"]["central_numbers"] == (1, 1)
+    assert out["breakdown"]["id_number"]["correct_flagged"] == 1
+    assert not [f for f in out["failures"] if f["field"] in ("id_number", "central_numbers")]
+
+
+@pytest.mark.parametrize("flags", [{}, {"id_number": "low_confidence"}])
+def test_unreadable_label_any_value_is_a_silent_error(flags):
+    out = ev.summarize([(UNREADABLE_TRUTH, dict(GOOD, id_number="11223344"), None, flags)])
+    assert out["per_field"]["id_number"] == (0, 1)
+    assert out["breakdown"]["id_number"]["wrong_unflagged"] == 1      # a guess, even when flagged
+
+
+def test_unreadable_label_empty_but_unflagged_is_missing():
+    out = ev.summarize([(UNREADABLE_TRUTH, dict(GOOD, id_number=""), None, {})])
+    assert out["breakdown"]["id_number"]["missing"] == 1 and out["per_field"]["id_number"] == (0, 1)
+
+
+def test_unreadable_label_never_matches_the_literal_text():
+    assert ev.compare_row(UNREADABLE_TRUTH, dict(GOOD, id_number="UNREADABLE"))["id_number"] is False
+
+
+# ---- tags / split -------------------------------------------------------------------------
+
+def test_old_ground_truth_without_tags_or_split_still_loads(tmp_path):
+    path = tmp_path / "gt.csv"
+    path.write_text("source_file,page_numbers,id_number\nf.pdf,3,1\n", encoding="utf-8")
+    rows = ev.load_ground_truth(path)
+    assert rows[0]["tags"] == "" and ev.row_split(rows[0]) == "unassigned" and ev.row_tags(rows[0]) == []
+
+
+def test_select_rows_by_split_and_tag():
+    rows = [dict(TRUTH, split="test", tags="handwritten; multi_central"), dict(TRUTH, split="Tune", tags="printed"),
+            dict(TRUTH, split="", tags="")]
+    assert len(ev.select_rows(rows, split="test")) == 1
+    assert ev.select_rows(rows, split="tune")[0]["tags"] == "printed"
+    assert len(ev.select_rows(rows, tag="MULTI_CENTRAL")) == 1
+    assert len(ev.select_rows(rows, split="unassigned")) == 1
+
+
+def test_groups_report_per_split_and_tag(capsys):
+    a = dict(TRUTH, split="test", tags="handwritten;multi_central")
+    b = dict(TRUTH, split="tune", tags="handwritten")
+    groups = ev.summarize_groups([(a, GOOD, None, {}), (b, dict(GOOD, central_numbers="111111"), None, {})])
+    assert set(groups["split"]) == {"test", "tune"} and set(groups["tag"]) == {"handwritten", "multi_central"}
+    assert groups["tag"]["handwritten"]["per_field"]["central_numbers"] == (1, 2)
+    saved = ev.counts_only(ev.summarize([(a, GOOD)]), groups=groups)
+    assert saved["groups"]["split"]["tune"]["silent_errors"] == 1 and "111111" not in json.dumps(saved)
+    ev.print_groups(groups)
+    out = capsys.readouterr().out
+    assert "Per split:" in out and "silent_errors=1" in out and "111111" not in out
