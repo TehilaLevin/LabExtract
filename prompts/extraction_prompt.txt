@@ -100,13 +100,16 @@ commitment_numbers (מספר התחייבות) - LIST. The payment commitment / 
   phone/fax numbers, IDs, doctor license numbers, central (GLC) numbers.
 - If the form has no commitment number, return [].
 
-field_locations - WHERE the number fields are, so a reviewer program can re-read them at higher resolution.
+field_locations - WHERE the fields are, so a reviewer program can re-read the numbers at higher resolution and a
+person can see where each value came from.
 - One entry per place where id_number, central_numbers, received_date or commitment_numbers is written: field, page
   (1-based within this form), box_2d = [ymin, xmin, ymax, xmax] normalized 0-1000 on that page.
 - The box covers the value AND its label (or the whole GLC sticker / the whole "התקבל" stamp / the handwritten central
   number with the date below it). Keep it tight: do not box half the page.
 - Report the box ALSO when the value is unreadable (status "unreadable") - that is when it matters most.
 - Several central / commitment numbers in different places => one entry per place. Omit fields that are not present.
+- sending_entity: ONE entry for the place you identified the sender from (its logo, letterhead, stamp or "גורם שולח"
+  line). Omit it when sending_entity is null.
 
 ==========================================================================
 FORM TYPES (form_type) AND WHERE THE FIELDS ARE

@@ -25,6 +25,7 @@ from src.constants import (
     FIELD_STATUSES,
     FORM_TYPES,
     LIST_FIELDS,
+    LOCATED_FIELDS,
     MAX_FIELD_LOCATIONS,
     MAX_NAME_LOCATIONS,
     NAME_LOCATION_KINDS,
@@ -32,7 +33,6 @@ from src.constants import (
     NAME_ORDER_CONVENTIONS,
     NAME_SCRIPTS,
     RECEIVED_DATE_SOURCES,
-    REREAD_FIELDS,
 )
 from src.image_preprocessor import resize_for_model
 from src.validators import list_approved_senders
@@ -282,7 +282,7 @@ class ExtractionResult:
     error: Optional[str] = None
     name_order_basis: str = "unclear"  # one of NAME_ORDER_BASES
     name_locations: list = field(default_factory=list)  # [{"page", "box", "kind"}], box = 0-1000
-    field_locations: list = field(default_factory=list)  # [{"field", "page", "box"}], REREAD_FIELDS only
+    field_locations: list = field(default_factory=list)  # [{"field", "page", "box"}], LOCATED_FIELDS only
 
 
 def _value_schema(key: str, sender_names: list) -> dict:
@@ -341,7 +341,7 @@ def build_schema(sender_names: list) -> dict:
         "items": {
             "type": "OBJECT",
             "properties": {
-                "field": {"type": "STRING", "enum": list(REREAD_FIELDS)},
+                "field": {"type": "STRING", "enum": list(LOCATED_FIELDS)},
                 "page": {"type": "INTEGER"},
                 "box_2d": {"type": "ARRAY", "items": {"type": "INTEGER"}},
             },
@@ -448,12 +448,12 @@ def _parse_locations(raw) -> list:
 
 
 def _parse_field_locations(raw) -> list:
-    """Well-formed boxes of REREAD_FIELDS, at most MAX_FIELD_LOCATIONS per field, duplicates dropped."""
+    """Well-formed boxes of LOCATED_FIELDS, at most MAX_FIELD_LOCATIONS per field, duplicates dropped."""
     out, per_field = [], {}
     for item in raw if isinstance(raw, list) else []:
         parsed = _parse_box(item)
         key = item.get("field") if isinstance(item, dict) else None
-        if parsed is None or key not in REREAD_FIELDS:
+        if parsed is None or key not in LOCATED_FIELDS:
             continue
         loc = {"field": key, "page": parsed[0], "box": parsed[1]}
         if loc in out or per_field.get(key, 0) >= MAX_FIELD_LOCATIONS[key]:
@@ -573,8 +573,6 @@ class NameCheck:
     needed: bool
     readings: list = field(default_factory=list)  # list[NameReading], one per crop
     error: Optional[str] = None
-    # [(kind, jpeg_bytes)] in memory only - shown next to flagged name fields in the review UI.
-    crops: list = field(default_factory=list)
 
 
 def needs_name_check(extraction: ExtractionResult) -> bool:
@@ -625,18 +623,15 @@ def verify_names(images: list, extraction: ExtractionResult) -> NameCheck:
         return NameCheck(needed=True, error="no name location to verify")
     name_rules = "\n".join(f"- {where} => {order}" for where, order in NAME_ORDER_CONVENTIONS)
     contents: list = [NAME_CHECK_PROMPT.format(form_type=extraction.form_type, name_rules=name_rules)]
-    crop_parts = []
-    for i, (kind, crop) in enumerate(crops, start=1):
-        part = image_part(crop, NAME_CROP_MAX_SIDE)
-        crop_parts.append((kind, part.inline_data.data))
-        contents += [f"Crop {i}:", part]
+    for i, (_, crop) in enumerate(crops, start=1):
+        contents += [f"Crop {i}:", image_part(crop, NAME_CROP_MAX_SIDE)]
     try:
         data = generate_json(contents, NAME_CHECK_SCHEMA, media_resolution="high", purpose="verify_names")
     except GeminiQuotaError:
         raise
     except GeminiError as exc:
         logger.warning("Name verification failed: %s", exc)
-        return NameCheck(needed=True, error=str(exc), crops=crop_parts)
+        return NameCheck(needed=True, error=str(exc))
     by_index = {c.get("crop_index"): c for c in data.get("crops") or [] if isinstance(c, dict)}
     readings = []
     for i, (kind, _) in enumerate(crops, start=1):
@@ -655,4 +650,4 @@ def verify_names(images: list, extraction: ExtractionResult) -> NameCheck:
             confidence=_confidence(c.get("confidence")),
         ))
     logger.info("Verified names from %d crop(s); legible=%s", len(readings), [r.legible for r in readings])
-    return NameCheck(needed=True, readings=readings, crops=crop_parts)
+    return NameCheck(needed=True, readings=readings)

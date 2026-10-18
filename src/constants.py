@@ -92,9 +92,14 @@ FLAG_REASONS = {
 FIELD_STATUSES = ("read", "unreadable", "not_present")
 
 # Fields that get a targeted, high-resolution second reading when flagged (names have
-# their own verification). The extractor reports up to MAX_FIELD_LOCATIONS boxes for them.
+# their own verification).
 REREAD_FIELDS = ("id_number", "central_numbers", "received_date", "commitment_numbers")
-MAX_FIELD_LOCATIONS = {"id_number": 2, "central_numbers": 4, "received_date": 2, "commitment_numbers": 3}
+# Fields whose location the extractor reports in field_locations (up to MAX_FIELD_LOCATIONS boxes each):
+# the re-read fields plus the sender, so the review screen can show where every value was read.
+# Names are located separately (name_locations).
+LOCATED_FIELDS = (*REREAD_FIELDS, "sending_entity")
+MAX_FIELD_LOCATIONS = {"id_number": 2, "central_numbers": 4, "received_date": 2, "commitment_numbers": 3,
+                       "sending_entity": 1}
 
 # How the first/last name split was decided. Names are flagged for review only when
 # the order is genuinely unclear ("unclear"), not merely because the name sat in one field.

@@ -71,7 +71,7 @@ def test_schema_has_status_and_field_locations():
     assert schema["properties"]["id_number"]["properties"]["status"]["enum"] == ["read", "unreadable", "not_present"]
     assert "field_locations" in schema["required"]
     item = schema["properties"]["field_locations"]["items"]["properties"]
-    assert item["field"]["enum"] == list(fr.REREAD_FIELDS)
+    assert item["field"]["enum"] == [*fr.REREAD_FIELDS, "sending_entity"]
 
 
 def test_prompt_explains_status_and_field_locations():
@@ -90,7 +90,7 @@ def test_invalid_field_location_boxes_are_dropped():
         {"field": "central_numbers", "page": 1, "box_2d": [0, 0, 1001, 10]},       # out of range
         {"field": "central_numbers", "page": 1, "box_2d": [1, 2, 3]},              # 3 numbers
         {"field": "central_numbers", "page": 1, "box_2d": ["a", 2, 3, 4]},         # not numbers
-        {"field": "first_name", "page": 1, "box_2d": [1, 2, 3, 4]},                # not a re-read field
+        {"field": "first_name", "page": 1, "box_2d": [1, 2, 3, 4]},                # names: name_locations
         "garbage",
     ])
     assert ext.field_locations == [{"field": "id_number", "page": 1, "box": (100, 100, 200, 300)}]

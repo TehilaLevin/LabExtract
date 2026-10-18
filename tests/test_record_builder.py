@@ -604,15 +604,12 @@ def test_unsplit_crop_reading_is_shown_whole():
     assert rec.suggestions == {"first_name": "ישראל ישראלי", "last_name": "ישראל ישראלי"}
 
 
-def test_verified_names_have_no_suggestions_and_keep_crops():
-    check = _check(_reading(first="ישראל", last="ישראלי", assignment="labeled_fields"))
-    check.crops = [("labeled_fields", b"\xff\xd8jpeg")]
-    rec = _rec(_hand(), check)
+def test_verified_names_have_no_suggestions():
+    rec = _rec(_hand(), _check(_reading(first="ישראל", last="ישראלי", assignment="labeled_fields")))
     assert rec.suggestions == {} and rec.flags == {}
-    assert rec.name_crops == [("labeled_fields", b"\xff\xd8jpeg")]
 
 
-def test_verify_names_keeps_crops_in_memory_and_sends_form_type(monkeypatch, tmp_path):
+def test_verify_names_writes_nothing_and_sends_form_type(monkeypatch, tmp_path):
     from PIL import Image
 
     from src import config
@@ -629,7 +626,7 @@ def test_verify_names_keeps_crops_in_memory_and_sends_form_type(monkeypatch, tmp
     check = ee.verify_names([Image.new("RGB", (1000, 1400), "white")], _hand())
     assert "Form type reported by the full-page pass: maccabi_lab_request" in sent["prompt"]
     assert "sheba_system_printout" in sent["prompt"]  # known name orders are included
-    assert len(check.crops) == 1 and check.crops[0][1][:2] == b"\xff\xd8"  # JPEG bytes
+    assert len(check.readings) == 1
     assert not list(tmp_path.iterdir())  # nothing written to disk
 
 
