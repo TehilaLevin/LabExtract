@@ -1,4 +1,4 @@
-"""Source crops: for every field, the image area its value was read from, for the review screen.
+"""Review images: for every field, the image area its value was read from, plus a preview of each page.
 
 The full-page pass reports where each field is (field_locations; name_locations for the names). Each box
 is cropped from the full-resolution page (config.CROP_SOURCE), encoded as JPEG and kept in memory only -
@@ -21,6 +21,7 @@ NAME_PAD_X = 0.35       # same padding as the name check (model name boxes can b
 NAME_PAD_Y = 0.6
 NAME_MIN_PAD_PX = 40
 MAX_SIDE = 1200         # display size: readable on screen, small in memory
+PAGE_MAX_SIDE = 1600    # whole-page preview next to the fields
 JPEG_QUALITY = 85
 
 
@@ -31,10 +32,21 @@ class SourceCrop:
     jpeg: bytes
 
 
-def _encode(image) -> bytes:
+@dataclass(frozen=True)
+class PagePreview:
+    page_number: int    # page number in the source file
+    jpeg: bytes
+
+
+def _encode(image, max_side: int = MAX_SIDE) -> bytes:
     buf = BytesIO()
-    resize_for_model(image.convert("RGB"), MAX_SIDE).save(buf, "JPEG", quality=JPEG_QUALITY)
+    resize_for_model(image.convert("RGB"), max_side).save(buf, "JPEG", quality=JPEG_QUALITY)
     return buf.getvalue()
+
+
+def page_previews(images: list, page_numbers: list) -> list:
+    """[PagePreview] of the form's pages, upright, in memory only (the page files are deleted after the run)."""
+    return [PagePreview(n, _encode(img, PAGE_MAX_SIDE)) for n, img in zip(page_numbers, images)]
 
 
 def _crop(images: list, page: int, box: tuple, pad_x: float, pad_y: float, min_pad: int) -> Optional[SourceCrop]:

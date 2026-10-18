@@ -61,6 +61,8 @@ class Record:
     # field key -> [field_crops.SourceCrop]: where each value was read from, in memory only (never exported
     # or logged), for the review UI. Fields the model did not locate are absent.
     field_crops: dict = field(default_factory=dict)
+    # [field_crops.PagePreview] of the form's pages, in memory only, for the review UI.
+    page_images: list = field(default_factory=list)
     # Other readings from the targeted re-read (field -> [text]), in memory only, never exported or
     # logged: shown to the reviewer next to a flagged field. Never an approved value.
     alternatives: dict = field(default_factory=dict)
@@ -154,12 +156,12 @@ def field_flags(extraction, threshold: float = config.CONFIDENCE_THRESHOLD, toda
 
 def build_record(form, extraction, name_check=None, threshold: float = config.CONFIDENCE_THRESHOLD,
                  today: Optional[date] = None, recheck=None, page_info: Optional[list] = None,
-                 field_crops: Optional[dict] = None) -> Record:
+                 field_crops: Optional[dict] = None, page_images: Optional[list] = None) -> Record:
     """Merge one form's extraction with validation. `form` is a form_splitter.Form.
 
     name_check is the extraction_engine.NameCheck for this form (None = not run); recheck is the
     field_reread.FieldRecheck (None = not run); page_info is [{"page", "size", "steps"}] for diagnostics;
-    field_crops is field_crops.source_crops() for this form.
+    field_crops / page_images are field_crops.source_crops() / page_previews() for this form.
     """
     today = today or date.today()
     overrides, alternatives, outcomes = {}, {}, {}
@@ -189,6 +191,7 @@ def build_record(form, extraction, name_check=None, threshold: float = config.CO
     return Record(form.index, values, flags, confidences, metadata,
                   split_flags=list(form.split_flags), error=extraction.error,
                   suggestions=suggestions, field_crops=dict(field_crops or {}),
+                  page_images=list(page_images or []),
                   alternatives=alternatives,
                   diagnostics=_diagnostics(extraction, flags, recheck, outcomes, page_info))
 
@@ -458,7 +461,8 @@ ProgressCallback = Callable[[str, int, int], None]  # (stage, done, total)
 
 def process_files(files, progress: Optional[ProgressCallback] = None) -> list:
     """Full pipeline: convert -> split -> preprocess -> extract -> verify names -> re-read
-    flagged number fields -> validate. Each record keeps the source crop of every located field.
+    flagged number fields -> validate. Each record keeps page previews and the source crop of every
+    located field, in memory only.
 
     The full-page pass reads the processed pages; name, field and source crops are cut from
     config.CROP_SOURCE ("original" pixels by default, same geometry). Page images live in a
@@ -466,7 +470,7 @@ def process_files(files, progress: Optional[ProgressCallback] = None) -> list:
     """
     # Imported here so the pure record-building code above has no API dependency.
     from src.extraction_engine import GeminiQuotaError, NameCheck, empty_result, extract_form, verify_names
-    from src.field_crops import source_crops
+    from src.field_crops import page_previews, source_crops
     from src.field_reread import FieldRecheck, reread_fields, select_reread_fields
     from src.file_converter import cleanup_temp, convert_files, new_run_dir
     from src.form_splitter import split_forms
@@ -481,29 +485,31 @@ def process_files(files, progress: Optional[ProgressCallback] = None) -> list:
         quota_hit = threading.Event()
 
         def work(form):
-            if quota_hit.is_set():
-                return empty_result("Gemini API quota exhausted"), None, None, [], {}
             prepared = [preprocess(img) for img in form.images()]
             images = [p.processed for p in prepared]
             crop_images = images if config.CROP_SOURCE == "processed" else [p.crop_source for p in prepared]
             page_info = [{"page": n, "size": list(p.processed.size), "steps": list(p.steps)}
                          for n, p in zip(form.page_numbers, prepared)]
+            # Previews even when extraction fails: the reviewer then types the form in by hand.
+            previews = page_previews(crop_images, form.page_numbers)
+            if quota_hit.is_set():
+                return empty_result("Gemini API quota exhausted"), None, None, page_info, {}, previews
             try:
                 extraction = extract_form(images, senders)
                 name_check = verify_names(crop_images, extraction)
             except GeminiQuotaError as exc:
                 quota_hit.set()
-                return empty_result(str(exc)), NameCheck(needed=False), None, page_info, {}
+                return empty_result(str(exc)), NameCheck(needed=False), None, page_info, {}, previews
             crops = source_crops(crop_images, extraction)
             if not config.FIELD_REREAD_ENABLED:
-                return extraction, name_check, None, page_info, crops
+                return extraction, name_check, None, page_info, crops, previews
             keys = select_reread_fields(extraction, field_flags(extraction)[1])
             try:
                 recheck = reread_fields(crop_images, extraction, keys)
             except GeminiQuotaError as exc:
                 quota_hit.set()  # keep the full-page extraction; the re-read simply did not happen
                 recheck = FieldRecheck(attempted=keys, error=str(exc))
-            return extraction, name_check, recheck, page_info, crops
+            return extraction, name_check, recheck, page_info, crops, previews
 
         results = [None] * len(forms)
         with ThreadPoolExecutor(max_workers=config.MAX_PARALLEL_REQUESTS) as pool:
@@ -513,8 +519,8 @@ def process_files(files, progress: Optional[ProgressCallback] = None) -> list:
                 if progress:
                     progress("extract", done, len(forms))
 
-        records = [build_record(f, e, c, recheck=r, page_info=info, field_crops=crops)
-                   for f, (e, c, r, info, crops) in zip(forms, results)]
+        records = [build_record(f, e, c, recheck=r, page_info=info, field_crops=crops, page_images=previews)
+                   for f, (e, c, r, info, crops, previews) in zip(forms, results)]
         for record in records:
             for line in diagnostic_lines(record):
                 logger.info(line)

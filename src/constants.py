@@ -87,6 +87,18 @@ FLAG_REASONS = {
     "reread_single_reading": "נקרא רק בקריאה חוזרת – לבדיקה",
 }
 
+# Form-level split warnings (form_splitter.SPLIT_FLAG_*), shown on the review screen.
+SPLIT_FLAG_LABELS = {
+    "split_uncertain": "לא ודאי שהטופס מתחיל בעמוד זה – בדקו שהעמודים שייכים לאותו טופס",
+    "split_failed": "פיצול העמודים לטפסים נכשל – בדקו שהעמודים שייכים לאותו טופס",
+}
+
+# Review status column in the export (one value per form).
+REVIEW_STATUS_KEY = "review_status"
+REVIEW_STATUS_HEADER = "סטטוס בדיקה"
+REVIEW_STATUS_APPROVED = "אושר"
+REVIEW_STATUS_PENDING = "לא אושר"
+
 # Per-field reading status reported by the extractor: lets "not on the form" (missing)
 # be told apart from "on the form but not legible" (unreadable).
 FIELD_STATUSES = ("read", "unreadable", "not_present")

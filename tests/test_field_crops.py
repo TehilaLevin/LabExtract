@@ -241,7 +241,8 @@ def test_process_files_crops_follow_crop_source(monkeypatch, temp_dir, crop_sour
     assert _close(_centre(_decode(rec.field_crops["id_number"][0])), expected)
 
 
-def test_quota_stop_gives_records_without_crops(monkeypatch, temp_dir):
+def test_quota_stop_gives_records_without_crops_but_with_pages(monkeypatch, temp_dir):
+    """A form that could not be extracted is typed in by hand: its page image is still needed."""
     def fake(contents, schema, **kwargs):
         if "upright" in schema["properties"] or "pages" in schema["properties"]:
             return _fake_generate(contents, schema)
@@ -249,5 +250,26 @@ def test_quota_stop_gives_records_without_crops(monkeypatch, temp_dir):
 
     monkeypatch.setattr(ee, "generate_json", fake)
     monkeypatch.setattr("src.config.MAX_PARALLEL_REQUESTS", 1)
-    records = rb.process_files([(f"{i}.png", _png_bytes()) for i in range(2)])
+    records = rb.process_files([(f"{i}.png", _png_bytes()) for i in range(3)])
     assert all(r.error and r.field_crops == {} for r in records)
+    assert all(len(r.page_images) == 1 for r in records)
+
+
+# ---- page previews ----------------------------------------------------------------------
+
+def test_page_previews_keep_page_numbers_and_are_bounded():
+    pages = [Image.new("RGB", (3000, 4000), "white"), _page(marks=[((0, 0, 1000, 1000), "red")])]
+    previews = fc.page_previews(pages, [7, 8])
+    assert [p.page_number for p in previews] == [7, 8]
+    first, second = (Image.open(BytesIO(p.jpeg)) for p in previews)
+    assert max(first.size) == fc.PAGE_MAX_SIDE and first.size[0] < first.size[1]  # aspect kept
+    assert _close(_centre(second.convert("RGB")), "red")
+
+
+def test_process_files_keeps_page_previews_in_memory(monkeypatch, temp_dir):
+    monkeypatch.setattr(ee, "generate_json", _fake_generate)
+    records = rb.process_files([("a.png", _png_bytes()), ("b.png", _png_bytes())])
+    assert [[p.page_number for p in r.page_images] for r in records] == [[1], [1]]
+    assert all(r.page_images[0].jpeg[:2] == b"\xff\xd8" for r in records)
+    assert not list(temp_dir.iterdir())
+    assert "page_images" not in rb.records_to_dataframe(records).columns

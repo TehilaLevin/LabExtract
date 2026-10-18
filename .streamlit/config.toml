@@ -1,0 +1,8 @@
+# LabExtract runs on patient data: serve on this computer only and send no usage statistics.
+# To let other lab computers connect, change server.address deliberately (and only on a trusted network).
+[server]
+address = "localhost"
+maxUploadSize = 500
+
+[browser]
+gatherUsageStats = false

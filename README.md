@@ -3,7 +3,37 @@
 Extracts patient commitment-form data for the Central Virology Laboratory (Israeli Ministry of Health):
 batch upload → split into forms → identify form type → extract fields → validate → review → Excel export.
 
-> Full setup, run instructions, pipeline description and limitations will be added here.
+> Full setup instructions and pipeline description will be added here.
+
+## Running the app
+
+```bash
+.venv/Scripts/activate          # Windows; macOS / Linux: source .venv/bin/activate
+streamlit run app.py            # opens http://localhost:8501
+```
+
+`.env` must hold `GEMINI_API_KEY` and `GEMINI_MODEL` (see `.env.example`); PDFs need Poppler.
+
+1. **Upload** – drag in PDFs / phone photos (many forms per file are fine) and press "חלץ". A progress bar
+   follows the split and then each form. Gemini is called only here.
+2. **Summary** – one row per form: form type, number of fields to review, form warnings, status. Click a row.
+3. **Review** – the form image on one side; on the other, one card per field with the value, the image crop the
+   value was read from, an edit box, and the reason for any flag (orange). Unverified handwritten names are never
+   filled in: the reading is shown as "הצעה – לא מאומת" for the reviewer to copy in only if it is right. The sender
+   is chosen from the closed list. "אשר טופס ועבור לבא" re-validates the form: a value that still fails validation
+   (ID check digit, date, sender) needs an explicit "אשר בכל זאת"; empty fields are reported, never blocking.
+4. **Export** – Excel with Hebrew headers, right-to-left sheet, one row per form and a review-status column.
+   Flagged cells of forms that were not approved are orange; exporting while forms are unapproved shows them
+   and needs a confirmation.
+
+Privacy: uploads, results, crops and page previews live only in the browser session's memory (`st.session_state`),
+never in a shared cache, a log or on disk; the pipeline's temp folder is deleted after every run. "נקה הכל" drops
+everything. `.streamlit/config.toml` serves the app on `localhost` only and turns off Streamlit's usage statistics;
+open it to other lab computers only deliberately, on a trusted network.
+
+Streamlit limits: `st.data_editor` cannot colour single cells, so editing happens per form in field cards (orange
+via CSS) and the read-only tables use a pandas Styler. Field inputs sit in an `st.form` (Enter never submits), so
+typing does not rerun the script; saved values are kept in `src/review_session.py`, which is pure Python and tested.
 
 ## Known limitations
 

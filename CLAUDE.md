@@ -122,12 +122,13 @@ Where to find each field:
 - Drag-and-drop uploader (multiple files).
 - "Extract" button with a progress bar (per form).
 - Summary line: X forms processed, Y fields flagged for review.
-- st.data_editor with one row per commitment form.
-- Highlight in orange (#FFA500) every flagged cell. If data_editor cannot style cells directly, show a styled preview (pandas Styler) next to it and a "needs review" indicator column; explain the approach in a code comment.
-- "Download Excel" button from the edited data.
+- Phase 4 decision (approved by the user): instead of one st.data_editor table, a summary table (one row per form, styled with pandas Styler, click to open) and a per-form review screen: form image beside one card per field (value, source crop, edit box, flag reason). Results live in st.session_state, so reruns never call Gemini.
+- Highlight in orange (#FFA500) every flagged field (CSS on the field card; Styler in read-only tables). Explain the approach in a code comment.
+- "Approve form" moves to the next form; a value that fails validation needs an explicit "approve anyway".
+- "Download Excel" button from the reviewed data; allowed once all forms are approved, or with a warning listing the unapproved ones.
 
 ### excel_exporter.py
-- DataFrame → in-memory .xlsx (BytesIO) with openpyxl: one row per commitment, one column per field, Hebrew headers, auto column width, right-to-left sheet, orange fill on cells that were flagged and not yet corrected.
+- DataFrame → in-memory .xlsx (BytesIO) with openpyxl: one row per commitment, one column per field, Hebrew headers, auto column width, right-to-left sheet, orange fill on cells that were flagged and not yet corrected (= flagged fields of forms that were not approved).
 
 ### evaluation/evaluate_accuracy.py
 - Run the engine on the forms listed in ground_truth.csv and print per-field accuracy (exact match after normalization), plus a list of failed fields, so we can report honestly which fields work well and which are still hard.
