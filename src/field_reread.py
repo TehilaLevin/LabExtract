@@ -240,7 +240,7 @@ def reread_fields(images: list, extraction, keys: list) -> FieldRecheck:
     for i, (key, crop) in enumerate(crops, start=1):
         contents += [f"Crop {i} - field: {key}", image_part(crop, CROP_MAX_SIDE)]
     try:
-        data = generate_json(contents, REREAD_SCHEMA, media_resolution="high", purpose="reread_fields")
+        data = generate_json(contents, REREAD_SCHEMA, purpose="reread_fields")
     except LLMQuotaError:
         raise
     except LLMError as exc:

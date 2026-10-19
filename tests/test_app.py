@@ -1,5 +1,5 @@
 """Streamlit app flows with streamlit.testing (no browser). Results are injected into session_state;
-any Gemini call fails the test - reruns must never call the API."""
+any model call fails the test - reruns must never call the API."""
 from io import BytesIO
 from pathlib import Path
 
@@ -35,9 +35,9 @@ def _record(index, flags=None, suggestions=None, **values):
 
 
 @pytest.fixture(autouse=True)
-def no_gemini(monkeypatch):
+def no_model_calls(monkeypatch):
     def fail(*a, **k):
-        raise AssertionError("Gemini must not be called")
+        raise AssertionError("the model must not be called")
 
     monkeypatch.setattr(ee, "generate_json", fail)
 

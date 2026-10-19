@@ -302,10 +302,10 @@ def install_request_guard(stats: dict, cache_only: bool = False, max_requests: O
             if cache_only:
                 stats["cache_misses"] += 1
                 stats["misses_by_stage"][stage] += 1
-                refusal = ee.GeminiError("not in dev cache (--cache-only: no live API call made)")
+                refusal = ee.LLMError("not in dev cache (--cache-only: no live API call made)")
             elif max_requests is not None and stats["live_requests"] >= max_requests:
                 stats["budget_exhausted"] = True
-                refusal = ee.GeminiQuotaError(f"--max-requests {max_requests} reached: no further live calls")
+                refusal = ee.LLMQuotaError(f"--max-requests {max_requests} reached: no further live calls")
             else:
                 stats["live_requests"] += 1
                 stats["live_by_stage"][stage] += 1
@@ -403,8 +403,18 @@ def labels_fingerprint(truth_rows: list) -> str:
     return h.hexdigest()
 
 
+# Claude configuration of a run, recorded in the summary and printed by a comparison.
+CONFIG_KEYS = ("CLAUDE_MODEL", "CLAUDE_EFFORT", "HIGHLIGHT_CROPS_ENABLED", "STRICT_VALIDATION", "EVAL_MODE",
+               "FIELD_REREAD_ENABLED", "CROP_SOURCE")
+
+
+def run_config() -> dict:
+    """The engine settings that change results (absent in older engine trees: "n/a")."""
+    return {k.lower(): getattr(config, k, "n/a") for k in CONFIG_KEYS}
+
+
 def run_info(stats: dict, records: list, cache_only: bool) -> dict:
-    """Settings and completeness of one run: codes and counts only (the model name is hashed)."""
+    """Settings and completeness of one run: codes, counts and settings only."""
     try:
         commit = subprocess.run(["git", "-C", str(ENGINE_ROOT), "rev-parse", "--short", "HEAD"],
                                 capture_output=True, text=True, timeout=10).stdout.strip()
@@ -412,20 +422,10 @@ def run_info(stats: dict, records: list, cache_only: bool) -> dict:
                                     capture_output=True, text=True, timeout=10).stdout.strip())
     except (OSError, subprocess.SubprocessError):
         commit, dirty = "unknown", False
-    try:
-        try:
-            from src.llm_provider import get_provider
-
-            model = get_provider().model_id()
-        except ImportError:  # --engine-root of a tree from before the provider interface (Gemini only)
-            model = config.GEMINI_MODEL
-        model_hash = hashlib.sha256(model.encode("utf-8")).hexdigest()[:12]
-    except RuntimeError:
-        model_hash = "unset"
     errors = sum(1 for r in records if r is None or getattr(r, "error", None))
     return {
         "engine_commit": commit + ("+uncommitted" if dirty else ""),
-        "model_sha256": model_hash,
+        "config": run_config(),
         "field_reread": getattr(config, "FIELD_REREAD_ENABLED", "n/a"),
         "crop_source": getattr(config, "CROP_SOURCE", "n/a"),
         "cache_only": cache_only,
@@ -450,15 +450,14 @@ def counts_only(summary: dict, outcomes: Optional[dict] = None, truth_rows: Opti
             "run": info or {}}
 
 
-def print_comparison(baseline: dict, current: dict, allow_model_change: bool = False) -> bool:
-    """Print the per-field change. Returns False (and prints why) when the runs are not comparable.
-    allow_model_change: compare runs of different models on purpose (e.g. Gemini -> Claude)."""
+def print_comparison(baseline: dict, current: dict) -> bool:
+    """Print the per-field change between two runs on the same rows and labels - e.g. two Claude
+    configurations (crops on/off, model, effort), whose settings are printed. Returns False (and prints
+    why) when the runs are not comparable."""
     problems = []
     if baseline.get("labels_sha256") != current.get("labels_sha256") or baseline.get("rows") != current.get("rows"):
         problems.append("different ground-truth rows or labels")
     b_run, c_run = baseline.get("run", {}), current.get("run", {})
-    if b_run.get("model_sha256") and b_run.get("model_sha256") != c_run.get("model_sha256") and not allow_model_change:
-        problems.append("different model (use --compare-models to compare models on purpose)")
     for name, run in (("baseline", b_run), ("current", c_run)):
         if run and not run.get("complete", False):
             problems.append(f"{name} run is incomplete (cache misses, request budget or failed forms)")
@@ -467,6 +466,10 @@ def print_comparison(baseline: dict, current: dict, allow_model_change: bool = F
         return False
     print(f"\nComparison: baseline {b_run.get('engine_commit', '?')} -> current {c_run.get('engine_commit', '?')}"
           " (same rows and labels):")
+    b_cfg, c_cfg = b_run.get("config", {}), c_run.get("config", {})
+    changed = {k: (b_cfg.get(k, "n/a"), c_cfg.get(k, "n/a")) for k in sorted(set(b_cfg) | set(c_cfg))
+               if b_cfg.get(k, "n/a") != c_cfg.get(k, "n/a")}
+    print("  settings: " + (", ".join(f"{k} {b} -> {c}" for k, (b, c) in changed.items()) or "identical"))
     for key, (ok, n) in current["per_field"].items():
         b_ok, _ = baseline["per_field"].get(key, (0, 0))
         b, c = baseline.get("breakdown", {}).get(key, {}), current.get("breakdown", {}).get(key, {})
@@ -488,8 +491,6 @@ def main() -> None:
     parser.add_argument("--engine-root", type=Path, help="evaluate the engine code of another tree (see doc)")
     parser.add_argument("--save-summary", type=Path, help="write counts (no values) to this JSON file")
     parser.add_argument("--compare", type=Path, help="baseline summary JSON from --save-summary")
-    parser.add_argument("--compare-models", action="store_true",
-                        help="with --compare: allow a baseline from another model (e.g. Gemini vs Claude)")
     parser.add_argument("--show-values", action="store_true", help="print values of non-personal fields")
     parser.add_argument("--split", choices=SPLITS + ("unassigned",), help="evaluate only rows of this split")
     parser.add_argument("--tag", help="evaluate only rows carrying this tag")
@@ -512,7 +513,7 @@ def main() -> None:
         for key, counter in outcomes.items():
             print(f"  {key:20s} " + ", ".join(f"{k}={v}" for k, v in sorted(counter.items())))
     info = run_info(stats, records, args.cache_only)
-    print(f"\nEngine: {info['engine_commit']}  field_reread={info['field_reread']}  crop_source={info['crop_source']}")
+    print(f"\nEngine: {info['engine_commit']}  " + "  ".join(f"{k}={v}" for k, v in info["config"].items()))
     if args.cache_only:
         print(f"Cache-only run: 0 live API calls; uncached requests per stage: {info['cache_misses'] or 'none'}")
     else:
@@ -537,12 +538,12 @@ def main() -> None:
     if args.save_summary:
         args.save_summary.write_text(json.dumps(current, ensure_ascii=False, indent=1), encoding="utf-8")
     if args.compare:
-        print_comparison(json.loads(args.compare.read_text(encoding="utf-8")), current, args.compare_models)
+        print_comparison(json.loads(args.compare.read_text(encoding="utf-8")), current)
 
 
 def stage_cost(usage: dict) -> Optional[float]:
     """USD for one stage's usage, summed over the models that answered it; None if any price is unknown."""
-    from src.llm_provider import cost_usd
+    from src.claude_client import cost_usd
 
     models = usage.get("models") or {}
     if len(models) != 1:  # per-model token split is not tracked; price only single-model stages

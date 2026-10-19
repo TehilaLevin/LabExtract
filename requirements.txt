@@ -1,5 +1,4 @@
-﻿google-genai
-anthropic
+﻿anthropic
 streamlit
 pandas
 openpyxl

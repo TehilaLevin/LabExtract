@@ -187,7 +187,7 @@ def test_name_with_digits_is_flagged():
 
 
 def test_extraction_error_flags_every_field():
-    rec = rb.build_record(_form(), ee.empty_result("Gemini API error 500"), today=TODAY)
+    rec = rb.build_record(_form(), ee.empty_result("Claude API error 500"), today=TODAY)
     assert set(rec.flags) == set(FIELD_KEYS)
     assert set(rec.flags.values()) == {"extraction_failed"}
     assert rec.error and rec.needs_review
@@ -205,7 +205,7 @@ def test_dataframe_one_row_per_form():
     assert rb.count_flagged_fields([_record(), _record(id_number={"value": None, "confidence": 0})]) == 1
 
 
-# ---- process_files (fake Gemini, no API calls) ------------------------------------
+# ---- process_files (fake model, no API calls) ------------------------------------
 
 @pytest.fixture
 def temp_dir(tmp_path, monkeypatch):
@@ -264,7 +264,7 @@ def test_quota_error_stops_further_requests(monkeypatch, temp_dir):
         if "pages" in schema["properties"]:
             return {"pages": [{"page_index": 1, "is_blank": False, "starts_new_form": True, "confidence": 0.9}]}
         calls["extract"] += 1
-        raise ee.GeminiQuotaError("Gemini API quota exhausted")
+        raise ee.LLMQuotaError("API quota exhausted")
 
     monkeypatch.setattr(ee, "generate_json", fake_generate)
     monkeypatch.setattr("src.config.MAX_PARALLEL_REQUESTS", 1)
@@ -275,32 +275,10 @@ def test_quota_error_stops_further_requests(monkeypatch, temp_dir):
 
 # ---- dev-only response cache --------------------------------------------------------
 
-class _FakeResponse:
-    text = '{"ok": true}'
-
-
-class _FakeModels:
-    def __init__(self):
-        self.calls = 0
-
-    def generate_content(self, **kwargs):
-        self.calls += 1
-        return _FakeResponse()
-
-
 @pytest.fixture
-def fake_client(monkeypatch, tmp_path):
-    """The Gemini provider with a fake genai client (the cache / usage / retry tests below)."""
-    from src import config
-    from src import llm_provider
-
-    models = _FakeModels()
-    client = type("C", (), {"models": models})()
-    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
-    monkeypatch.setattr(llm_provider.get_provider_named("gemini"), "client", lambda: client)
-    monkeypatch.setattr(config, "DEV_CACHE_DIR", tmp_path / "dev_cache")
-    monkeypatch.setenv("GEMINI_MODEL", "test-model")
-    return models
+def fake_client(fake_claude):
+    """Claude with a fake SDK client (tests/conftest.py); .calls counts the requests that left the app."""
+    return fake_claude
 
 
 def _contents(color="white"):
@@ -332,66 +310,46 @@ def test_dev_cache_hits_same_images_and_misses_changed_ones(fake_client, monkeyp
     assert fake_client.calls == 2                       # different image -> new request
     ee.generate_json(_contents(), {"type": "OBJECT"}, system_instruction="changed prompt")
     assert fake_client.calls == 3                       # prompt change invalidates
-    assert ee.clear_dev_cache() == 3
-
-
-def test_invalid_media_resolution_is_rejected(fake_client):
-    with pytest.raises(ValueError):
-        ee.generate_json(_contents(), {"type": "OBJECT"}, media_resolution="ultra")
+    monkeypatch.setattr(config, "CLAUDE_MODEL", "claude-sonnet-5-5")
+    ee.generate_json(_contents(), {"type": "OBJECT"})
+    assert fake_client.calls == 4                       # another model -> new request
+    assert ee.clear_dev_cache() == 4
 
 
 def test_token_usage_is_counted_for_live_calls_only(fake_client, monkeypatch):
     from src import config
+    from tests.conftest import fake_reply
 
-    class Meta:
-        prompt_token_count, candidates_token_count, thoughts_token_count = 300, 20, 5
-
-    _FakeResponse.usage_metadata = Meta()
+    fake_client.reply = fake_reply(input_tokens=200, output_tokens=25, cache_read=100)
     monkeypatch.setattr(config, "DEV_CACHE", True)
     ee.reset_usage()
     ee.generate_json(_contents(), {"type": "OBJECT"})
     ee.generate_json(_contents(), {"type": "OBJECT"})  # cache hit: not counted
     assert ee.get_usage() == {"requests": 1, "prompt_tokens": 300, "output_tokens": 25}
-    del _FakeResponse.usage_metadata
 
 
-def test_transport_errors_are_retried(fake_client, monkeypatch):
-    import httpx
+def test_invalid_json_is_retried_once_then_fails(fake_client):
+    from tests.conftest import fake_reply
 
-    from src import config
-
-    monkeypatch.setattr(config, "DEV_CACHE", False)
-    monkeypatch.setattr("src.llm_provider.TRANSPORT_RETRY_DELAY_S", 0)
-    real = fake_client.generate_content
-    failures = {"left": 2}
-
-    def flaky(**kwargs):
-        if failures["left"]:
-            failures["left"] -= 1
-            raise httpx.RemoteProtocolError("Server disconnected")
-        return real(**kwargs)
-
-    monkeypatch.setattr(fake_client, "generate_content", flaky)
-    assert ee.generate_json(_contents(), {"type": "OBJECT"}) == {"ok": True}
-
-
-def test_transport_errors_give_up_after_max_attempts(fake_client, monkeypatch):
-    import httpx
-
-    from src import config
-
-    monkeypatch.setattr(config, "DEV_CACHE", False)
-    monkeypatch.setattr("src.llm_provider.TRANSPORT_RETRY_DELAY_S", 0)
-    calls = {"n": 0}
-
-    def down(**kwargs):
-        calls["n"] += 1
-        raise httpx.ConnectError("no route")
-
-    monkeypatch.setattr(fake_client, "generate_content", down)
-    with pytest.raises(ee.GeminiError, match="ConnectError"):
+    fake_client.reply = fake_reply(text='{"ok": tr')
+    with pytest.raises(ee.LLMError, match="invalid JSON"):
         ee.generate_json(_contents(), {"type": "OBJECT"})
-    assert calls["n"] == config.MAX_ATTEMPTS
+    assert fake_client.calls == 2
+
+
+def test_sdk_client_retries_with_backoff_and_times_out(monkeypatch):
+    """Retries (429/529/5xx/connection, exponential backoff) and timeouts are the SDK's: check the settings."""
+    import anthropic
+
+    from src import claude_client, config
+
+    seen = {}
+    monkeypatch.setattr(claude_client, "_client", None)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: seen.update(kw) or object())
+    monkeypatch.setenv("CLAUDE_API_KEY", "sk-ant-test")
+    claude_client.anthropic_client()
+    assert seen["max_retries"] == config.CLAUDE_MAX_RETRIES >= 2 and seen["timeout"] == config.CLAUDE_TIMEOUT_S
+    monkeypatch.setattr(claude_client, "_client", None)
 
 
 # ---- handwritten-name safeguards -------------------------------------------------
@@ -517,7 +475,7 @@ def test_name_tokens_ignore_order_and_punctuation():
     assert rb._name_tokens("ישראל", "ישראלי") == rb._name_tokens("ישראלי.", "ישראל")
 
 
-def test_verify_names_with_fake_gemini(monkeypatch):
+def test_verify_names_with_fake_model(monkeypatch):
     from PIL import Image
 
     seen = {}
@@ -532,7 +490,7 @@ def test_verify_names_with_fake_gemini(monkeypatch):
     ext = _hand(locations=[{"page": 1, "box_2d": [100, 100, 150, 900], "kind": "single_field"},
                            {"page": 1, "box_2d": [500, 100, 550, 900], "kind": "patient_sticker"}])
     check = ee.verify_names([Image.new("RGB", (1000, 1400), "white")], ext)
-    assert seen["crops"] == 2 and seen["media_resolution"] == "high" and seen["purpose"] == "verify_names"
+    assert seen["crops"] == 2 and seen["purpose"] == "verify_names"
     assert [r.legible for r in check.readings] == [True, False]  # a missing answer counts as illegible
     assert check.readings[0].full_name == "ישראל ישראלי"
 
@@ -544,11 +502,9 @@ def test_verify_names_skips_printed(monkeypatch):
 
 def test_usage_by_purpose(fake_client, monkeypatch):
     from src import config
+    from tests.conftest import fake_reply
 
-    class Meta:
-        prompt_token_count, candidates_token_count, thoughts_token_count = 100, 10, 0
-
-    _FakeResponse.usage_metadata = Meta()
+    fake_client.reply = fake_reply(input_tokens=100, output_tokens=10, cache_read=0)
     monkeypatch.setattr(config, "DEV_CACHE", False)
     ee.reset_usage()
     ee.generate_json(_contents(), {"type": "OBJECT"}, purpose="extract")
@@ -557,7 +513,6 @@ def test_usage_by_purpose(fake_client, monkeypatch):
     assert ee.get_usage("verify_names") == {"requests": 2, "prompt_tokens": 200, "output_tokens": 20}
     assert ee.get_usage()["requests"] == 3
     assert set(ee.get_usage_by_purpose()) == {"extract", "verify_names"}
-    del _FakeResponse.usage_metadata
 
 
 # ---- unverified-name suggestions, kept crops, commitment == ID ---------------------
@@ -651,26 +606,10 @@ def test_commitment_kept_when_no_id_or_different():
 
 # ---- thinking level ---------------------------------------------------------------------
 
-def test_thinking_level_is_sent_and_keys_the_cache(fake_client, monkeypatch):
-    from google.genai import types
-
-    from src import config
-
-    monkeypatch.setattr(config, "DEV_CACHE", False)
-    sent = {}
-    real = fake_client.generate_content
-
-    def spy(**kwargs):
-        sent["cfg"] = kwargs["config"]
-        return real(**kwargs)
-
-    monkeypatch.setattr(fake_client, "generate_content", spy)
-    ee.generate_json(["x"], {"type": "OBJECT"}, thinking_level="high")
-    assert sent["cfg"].thinking_config.thinking_level == types.ThinkingLevel.HIGH
-    ee.generate_json(["x"], {"type": "OBJECT"})
-    assert sent["cfg"].thinking_config is None          # default: the model's own thinking
+def test_thinking_level_sets_the_effort_and_keys_the_cache(fake_client):
+    ee.generate_json(["x"], {"type": "OBJECT"}, thinking_level="medium")
+    assert fake_client.kwargs["output_config"]["effort"] == "medium"
     with pytest.raises(ValueError):
         ee.generate_json(["x"], {"type": "OBJECT"}, thinking_level="max")
-    plain = ee._cache_key(["x"], {}, None, "high")
-    assert ee._cache_key(["x"], {}, None, "high", None) == plain   # existing cache keys unchanged
-    assert ee._cache_key(["x"], {}, None, "high", "high") != plain
+    plain = ee._cache_key(["x"], {}, None, "high", None, "m")
+    assert ee._cache_key(["x"], {}, None, "high", "high", "m") != plain

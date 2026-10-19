@@ -189,7 +189,7 @@ def detect_rotation(image: Image.Image) -> tuple:
     for letter, rotation in _CANDIDATES.items():
         contents += [f"Version {letter}:",
                      image_part(fix_rotation(image, rotation), ORIENTATION_IMAGE_MAX_SIDE)]
-    data = generate_json(contents, ORIENTATION_SCHEMA, media_resolution="low", purpose="orientation")
+    data = generate_json(contents, ORIENTATION_SCHEMA, purpose="orientation")
     letter = data.get("upright")
     if letter not in _CANDIDATES:
         return 0, 0.0
@@ -209,7 +209,7 @@ def classify_batch(images: list, context: Optional[Image.Image] = None) -> list:
         contents += ["CONTEXT page (the page before PAGE 1):", image_part(context, _CONTEXT_PAGE_MAX_SIDE)]
     for i, img in enumerate(images, start=1):
         contents += [f"PAGE {i}:", image_part(img, config.SPLIT_IMAGE_MAX_SIDE)]
-    data = generate_json(contents, SPLIT_SCHEMA, media_resolution="medium", purpose="split")
+    data = generate_json(contents, SPLIT_SCHEMA, purpose="split")
 
     by_index = {}
     for item in data.get("pages") or []:

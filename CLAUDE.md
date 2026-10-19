@@ -15,7 +15,7 @@ IMPORTANT: Always reply to me in Hebrew. Keep all code, file names, folder names
 ## Step 1 – Virtual environment and dependencies
 - Create a virtual environment named `.venv` in the project root.
 - Create `requirements.txt` with:
-  google-genai, streamlit, pandas, openpyxl, python-dotenv, pdf2image, pillow, pytest
+  anthropic, streamlit, pandas, openpyxl, python-dotenv, pdf2image, pillow, pytest
 - Install inside the venv, then verify each package imports successfully.
 - Configure VS Code to use the venv interpreter via `.vscode/settings.json`.
 
@@ -25,7 +25,7 @@ Create exactly this structure:
 labextract/
 ├── .venv/
 ├── .vscode/settings.json
-├── .env                        # GEMINI_API_KEY=your_key_here (placeholder only)
+├── .env                        # CLAUDE_API_KEY=your_key_here (placeholder only)
 ├── .env.example                # same keys, no values; safe to commit
 ├── .gitignore                  # .env, .venv/, __pycache__/, *.pyc, data/samples/, data/temp/, data/output/
 ├── requirements.txt
@@ -37,13 +37,13 @@ labextract/
 │   ├── file_converter.py       # PDF -> page images, image loading
 │   ├── image_preprocessor.py   # deskew, contrast/brightness fix for dark or skewed scans
 │   ├── form_splitter.py        # splits a batch into individual forms
-│   ├── extraction_engine.py    # Gemini client, prompt, JSON schema, per-field confidence
+│   ├── extraction_engine.py    # prompt, JSON schema, per-field confidence (calls src/claude_client.py)
 │   ├── validators.py           # Israeli ID checksum, sender matching, date normalization
 │   ├── record_builder.py       # merges extraction + validation into review-ready records
 │   ├── excel_exporter.py       # DataFrame -> .xlsx bytes
 │   └── constants.py            # field definitions, Hebrew column headers
 ├── prompts/
-│   └── extraction_prompt.txt   # the prompt sent to Gemini (contains all field rules below)
+│   └── extraction_prompt.txt   # the prompt sent to Claude (contains all field rules below)
 ├── data/
 │   ├── reference/
 │   │   └── approved_senders.json  # closed list of HMOs + hospitals
@@ -82,8 +82,8 @@ Where to find each field:
 ## Step 4 – Module requirements
 
 ### config.py
-- Load GEMINI_API_KEY with python-dotenv. Raise a clear error if missing.
-- GEMINI_MODEL = the model set in GEMINI_MODEL in .env (no hardcoded fallback), CONFIDENCE_THRESHOLD = 0.8, optional POPPLER_PATH.
+- Load CLAUDE_API_KEY with python-dotenv. Raise a clear error if missing.
+- CLAUDE_MODEL = the model set in CLAUDE_MODEL in .env (default claude-opus-5-5; Claude is the only model provider), CONFIDENCE_THRESHOLD = 0.8, optional POPPLER_PATH.
 
 ### file_converter.py
 - Accept one file or many: PDF, PNG, JPG, JPEG.
@@ -94,10 +94,10 @@ Where to find each field:
 - Light preprocessing with Pillow: auto-contrast, brightness correction for dark scans, basic deskew. Keep the original too, in case preprocessing hurts readability.
 
 ### form_splitter.py
-- A batch PDF may contain many forms. Determine where each form begins (ask Gemini per page: new form or continuation of the previous one?). Group pages into forms. Output: one form = one record.
+- A batch PDF may contain many forms. Determine where each form begins (ask Claude per page: new form or continuation of the previous one?). Group pages into forms. Output: one form = one record.
 
 ### extraction_engine.py
-- For each form, send its image(s) to Gemini with prompts/extraction_prompt.txt.
+- For each form, send its image(s) to Claude with prompts/extraction_prompt.txt.
 - First identify form_type (e.g. Clalit, Maccabi, Meuhedet, Leumit, or a specific hospital), then extract fields.
 - Enforce structured JSON output (response_mime_type="application/json" + response_schema).
 - Each field: { "value": string | list[string] | null, "confidence": number 0-1 }.
@@ -122,7 +122,7 @@ Where to find each field:
 - Drag-and-drop uploader (multiple files).
 - "Extract" button with a progress bar (per form).
 - Summary line: X forms processed, Y fields flagged for review.
-- Phase 4 decision (approved by the user): instead of one st.data_editor table, a summary table (one row per form, styled with pandas Styler, click to open) and a per-form review screen: form image beside one card per field (value, source crop, edit box, flag reason). Results live in st.session_state, so reruns never call Gemini.
+- Phase 4 decision (approved by the user): instead of one st.data_editor table, a summary table (one row per form, styled with pandas Styler, click to open) and a per-form review screen: form image beside one card per field (value, source crop, edit box, flag reason). Results live in st.session_state, so reruns never call Claude.
 - Highlight in orange (#FFA500) every flagged field (CSS on the field card; Styler in read-only tables). Explain the approach in a code comment.
 - "Approve form" moves to the next form; a value that fails validation needs an explicit "approve anyway".
 - "Download Excel" button from the reviewed data; allowed once all forms are approved, or with a warning listing the unapproved ones.

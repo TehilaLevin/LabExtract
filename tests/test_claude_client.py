@@ -1,4 +1,4 @@
-"""Provider interface: Claude request shape, schema conversion, image limits, error mapping.
+"""Claude client: request shape, schema conversion, image limits, error mapping, cache keys.
 
 The Anthropic client is faked - these tests never touch the API.
 """
@@ -14,8 +14,9 @@ from PIL import Image
 
 from src import config
 from src import extraction_engine as ee
-from src import llm_provider as lp
+from src import claude_client as lp
 from src.constants import CONFIDENCE_LABELS, FIELD_KEYS
+from tests.conftest import fake_reply as _reply
 
 
 def _jpeg(w: int, h: int) -> lp.ImagePart:
@@ -24,17 +25,7 @@ def _jpeg(w: int, h: int) -> lp.ImagePart:
     return lp.ImagePart(buf.getvalue())
 
 
-# ---- provider selection ----------------------------------------------------------------
-
-def test_default_provider_is_claude(monkeypatch):
-    monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
-    assert lp.get_provider().name == "claude"
-    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
-    assert lp.get_provider().name == "gemini"
-    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
-    with pytest.raises(RuntimeError, match="LLM_PROVIDER"):
-        lp.get_provider()
-
+# ---- configuration -------------------------------------------------------------------------
 
 def test_claude_key_falls_back_to_anthropic_api_key(monkeypatch):
     monkeypatch.setenv("CLAUDE_API_KEY", "")
@@ -47,8 +38,8 @@ def test_claude_key_falls_back_to_anthropic_api_key(monkeypatch):
 
 # ---- schema conversion ---------------------------------------------------------------------
 
-def test_gemini_schema_converts_to_strict_json_schema():
-    schema = ee.build_schema(["כללית", "מכבי"], labelled_confidence=True)
+def test_compact_schema_converts_to_strict_json_schema():
+    schema = ee.build_schema(["כללית", "מכבי"])
     out = lp.to_json_schema(schema)
     assert out["type"] == "object" and out["additionalProperties"] is False
     assert out["required"] == list(out["properties"])          # every property required
@@ -65,12 +56,11 @@ def test_gemini_schema_converts_to_strict_json_schema():
     assert json.dumps(out).count('"null"') <= 16
 
 
-def test_gemini_schema_is_unchanged_without_labels():
-    schema = ee.build_schema(["כללית"])
-    assert schema["properties"]["id_number"]["properties"]["confidence"] == {"type": "NUMBER"}
-    assert "source_note" not in schema["properties"]["id_number"]["properties"]
-    assert "CONFIDENCE LABELS" not in ee.load_prompt(["כללית"])
-    assert "CONFIDENCE LABELS" in ee.load_prompt(["כללית"], labelled_confidence=True)
+def test_extraction_prompt_has_the_confidence_labels_and_the_decoy_warning():
+    prompt = ee.load_prompt(["כללית"])
+    assert "CONFIDENCE LABELS" in prompt
+    assert ("Highlighting does NOT indicate which field a value belongs to. Some highlighted values are decoys "
+            "(visit date, intake date, form date).") in prompt
 
 
 def test_confidence_labels_map_onto_the_threshold():
@@ -102,7 +92,7 @@ def test_large_images_are_downscaled_within_limits():
 
 
 def test_many_images_use_the_stricter_side_limit():
-    blocks = lp.ClaudeProvider().content_blocks(["intro", ""] + [_jpeg(2400, 1000)] * 21)
+    blocks = lp.content_blocks(["intro", ""] + [_jpeg(2400, 1000)] * 21)
     assert blocks[0] == {"type": "text", "text": "intro"}            # empty text is dropped
     img = Image.open(BytesIO(base64.b64decode(blocks[1]["source"]["data"])))
     assert max(img.size) <= lp.CLAUDE_MANY_IMAGES_MAX_SIDE
@@ -110,33 +100,9 @@ def test_many_images_use_the_stricter_side_limit():
 
 # ---- Claude call with a fake client -------------------------------------------------------------
 
-class _FakeMessages:
-    def __init__(self, reply=None, error=None):
-        self.reply, self.error, self.kwargs = reply, error, None
-
-    def create(self, **kwargs):
-        self.kwargs = kwargs
-        if self.error:
-            raise self.error
-        return self.reply
-
-
-def _reply(text='{"ok": true}', stop_reason="end_turn"):
-    usage = SimpleNamespace(input_tokens=100, output_tokens=40, cache_read_input_tokens=900,
-                            cache_creation_input_tokens=0)
-    return SimpleNamespace(content=[SimpleNamespace(type="thinking", thinking=""), SimpleNamespace(type="text", text=text)],
-                           usage=usage, model="claude-sonnet-5-5", stop_reason=stop_reason)
-
-
 @pytest.fixture
-def claude(monkeypatch, tmp_path):
-    provider = lp.get_provider_named("claude")
-    messages = _FakeMessages(_reply())
-    monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
-    monkeypatch.setattr(config, "DEV_CACHE", False)
-    monkeypatch.setattr(config, "DEV_CACHE_DIR", tmp_path / "dev_cache")
-    monkeypatch.setattr(provider, "client", lambda: SimpleNamespace(beta=SimpleNamespace(messages=messages)))
-    return messages
+def claude(fake_claude):
+    return fake_claude
 
 
 def test_claude_request_shape(claude):
@@ -240,10 +206,17 @@ def test_enum_values_with_quotes_are_aliased_and_restored(claude):
     assert claude.kwargs["output_config"]["format"]["schema"] == sent
 
 
-def test_claude_and_gemini_use_separate_cache_keys(claude, monkeypatch):
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
-    request = lp.ModelRequest(schema={})
-    claude_key = ee._cache_key(["x"], {}, None, "high", model_id=lp.get_provider_named("claude").cache_id(request))
-    gemini_key = ee._cache_key(["x"], {}, None, "high", model_id=lp.get_provider_named("gemini").cache_id(request))
-    assert claude_key != gemini_key
-    assert gemini_key == ee._cache_key(["x"], {}, None, "high")   # existing Gemini cache keys unchanged
+def test_cache_key_depends_on_model_effort_and_purpose(monkeypatch):
+    request = lp.ModelRequest(schema={}, purpose="extract")
+    key = ee._cache_key(["x"], {}, None, "high", None, lp.cache_id(request))
+    assert lp.cache_id(request) == f"claude|{config.CLAUDE_MODEL}|effort={config.CLAUDE_EFFORT}|thinking=adaptive"
+    assert lp.cache_id(lp.ModelRequest(schema={}, purpose="orientation")).endswith("effort=low")
+    monkeypatch.setattr(config, "CLAUDE_MODEL", "claude-sonnet-5-5")
+    assert ee._cache_key(["x"], {}, None, "high", None, lp.cache_id(request)) != key
+    assert ee._cache_key(["x"], {}, None, "high", "high", lp.cache_id(request)) != \
+        ee._cache_key(["x"], {}, None, "high", None, lp.cache_id(request))
+
+
+def test_cache_detail_tag_keeps_earlier_keys():
+    # Orientation / split answers cached by earlier runs were keyed with these tags: they must not change.
+    assert ee._CACHE_DETAIL == {"orientation": "low", "split": "medium"}

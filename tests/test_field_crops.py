@@ -1,6 +1,6 @@
 """Source crops: every located field keeps the image area its value was read from (in memory only).
 
-All Gemini calls are faked - these tests never touch the API.
+All model calls are faked - these tests never touch the API.
 """
 from io import BytesIO
 
@@ -246,7 +246,7 @@ def test_quota_stop_gives_records_without_crops_but_with_pages(monkeypatch, temp
     def fake(contents, schema, **kwargs):
         if "upright" in schema["properties"] or "pages" in schema["properties"]:
             return _fake_generate(contents, schema)
-        raise ee.GeminiQuotaError("Gemini API quota exhausted")
+        raise ee.LLMQuotaError("API quota exhausted")
 
     monkeypatch.setattr(ee, "generate_json", fake)
     monkeypatch.setattr("src.config.MAX_PARALLEL_REQUESTS", 1)

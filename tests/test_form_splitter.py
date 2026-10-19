@@ -43,7 +43,7 @@ def test_new_file_always_starts_new_form():
 
 
 def test_api_error_starts_new_flagged_form_and_keeps_page():
-    forms = fs.group_pages(_pages(("a.pdf", 3)), [D(), D(error="Gemini API error 500"), D(new=False)])
+    forms = fs.group_pages(_pages(("a.pdf", 3)), [D(), D(error="Claude API error 500"), D(new=False)])
     assert [f.page_numbers for f in forms] == [[1], [2, 3]]
     assert forms[1].split_flags == [fs.SPLIT_FLAG_FAILED]
 
@@ -87,7 +87,7 @@ def test_parse_decision_clamps_and_defaults():
         0, 1.0, 0.0, True, False)
 
 
-# ---- classify_batch / split_forms with a fake Gemini (no API calls) -----------
+# ---- classify_batch / split_forms with a fake model (no API calls) -----------
 
 def _fake_answer(n, **overrides):
     item = {"is_blank": False, "starts_new_form": True, "confidence": 0.9}
@@ -108,7 +108,7 @@ def fake_pages(tmp_path):
     return pages
 
 
-def test_split_forms_with_fake_gemini(monkeypatch, fake_pages):
+def test_split_forms_with_fake_model(monkeypatch, fake_pages):
     from src import extraction_engine
 
     calls = []
@@ -195,7 +195,7 @@ def test_quota_error_flags_forms_without_crashing(monkeypatch, fake_pages):
     from src import extraction_engine
 
     def boom(*a, **k):
-        raise extraction_engine.GeminiQuotaError("Gemini API quota exhausted")
+        raise extraction_engine.LLMQuotaError("API quota exhausted")
 
     monkeypatch.setattr(extraction_engine, "generate_json", boom)
     forms = fs.split_forms(fake_pages)
@@ -211,13 +211,13 @@ def test_orientation_uses_small_low_resolution_thumbnails(monkeypatch):
     seen = {}
 
     def fake_generate(contents, schema, **kwargs):
-        seen["res"] = kwargs.get("media_resolution")
+        seen["purpose"] = kwargs.get("purpose")
         seen["sizes"] = [c.data for c in contents if not isinstance(c, str)]
         return {"upright": "A", "confidence": 0.99}
 
     monkeypatch.setattr(extraction_engine, "generate_json", fake_generate)
     fs.detect_rotation(Image.new("RGB", (2480, 3508), "white"))  # full 300-dpi A4 page
-    assert seen["res"] == "low"
+    assert seen["purpose"] == "orientation"                       # low effort, see claude_client
     assert len(seen["sizes"]) == 4
     from io import BytesIO
     for data in seen["sizes"]:

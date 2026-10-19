@@ -1,6 +1,6 @@
 """Targeted re-read of flagged number fields: boxes, crops, combining, decisions, diagnostics.
 
-All Gemini calls are faked - these tests never touch the API.
+All model calls are faked - these tests never touch the API.
 """
 from datetime import date
 from pathlib import Path
@@ -194,7 +194,7 @@ def test_scalar_not_read(statuses, expected):
     assert fr.combine_readings("id_number", [_reading("id_number", [], status=s) for s in statuses]).status == expected
 
 
-# ---- reread_fields with a fake Gemini ----------------------------------------------------------
+# ---- reread_fields with a fake model ----------------------------------------------------------
 
 def test_reread_is_one_request_and_never_sees_the_page_value(monkeypatch):
     calls = []
@@ -214,7 +214,7 @@ def test_reread_is_one_request_and_never_sees_the_page_value(monkeypatch):
     recheck = fr.reread_fields([Image.new("RGB", (1000, 1400), "white")], ext, ["id_number", "central_numbers"])
     assert len(calls) == 1
     contents, kwargs = calls[0]
-    assert kwargs["purpose"] == "reread_fields" and kwargs["media_resolution"] == "high"
+    assert kwargs["purpose"] == "reread_fields" and "media_resolution" not in kwargs
     texts = " ".join(c for c in contents if isinstance(c, str))
     assert "123456789" not in texts and "937309" not in texts   # independent reading
     assert sum(1 for c in contents if not isinstance(c, str)) == 3
@@ -225,7 +225,7 @@ def test_reread_is_one_request_and_never_sees_the_page_value(monkeypatch):
 
 def test_failed_reread_request_is_recorded(monkeypatch):
     def boom(*a, **k):
-        raise ee.GeminiError("Gemini API error 500: INTERNAL")
+        raise ee.LLMError("Claude API error 500")
 
     monkeypatch.setattr(ee, "generate_json", boom)
     recheck = fr.reread_fields([Image.new("RGB", (1000, 1400))], _ext(), ["id_number"])
@@ -234,10 +234,10 @@ def test_failed_reread_request_is_recorded(monkeypatch):
 
 def test_quota_error_is_raised(monkeypatch):
     def quota(*a, **k):
-        raise ee.GeminiQuotaError("quota")
+        raise ee.LLMQuotaError("quota")
 
     monkeypatch.setattr(ee, "generate_json", quota)
-    with pytest.raises(ee.GeminiQuotaError):
+    with pytest.raises(ee.LLMQuotaError):
         fr.reread_fields([Image.new("RGB", (1000, 1400))], _ext(), ["id_number"])
 
 
@@ -252,7 +252,7 @@ def test_nothing_to_reread_makes_no_request(monkeypatch):
 
 def test_failed_targeted_extraction_changes_nothing():
     ext = _ext(id_number={"value": INVALID_ID, "confidence": 0.95})
-    rec = _rec(ext, fr.FieldRecheck(attempted=["id_number"], error="Gemini API error 500"))
+    rec = _rec(ext, fr.FieldRecheck(attempted=["id_number"], error="Claude API error 500"))
     assert rec.values["id_number"] == INVALID_ID and rec.flags["id_number"] == "invalid_id"
     assert rec.diagnostics["fields"]["id_number"]["reread"] == "failed"
 
@@ -526,7 +526,7 @@ def test_quota_during_reread_keeps_the_extraction(monkeypatch, tmp_path):
         if "pages" in schema["properties"]:
             return {"pages": [{"page_index": 1, "is_blank": False, "starts_new_form": True, "confidence": 0.9}]}
         if kwargs.get("purpose") == "reread_fields":
-            raise ee.GeminiQuotaError("quota")
+            raise ee.LLMQuotaError("quota")
         return _model_json(id_number={"value": INVALID_ID, "confidence": 0.9})
 
     monkeypatch.setattr(ee, "generate_json", fake_generate)

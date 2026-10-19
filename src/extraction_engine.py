@@ -1,4 +1,4 @@
-"""Model calls (via src.llm_provider), prompt, JSON schema, per-field confidence.
+"""Model calls (via src.claude_client), prompt, JSON schema, per-field confidence.
 
 Privacy: only form images (and the fixed prompt) are sent to the API. Nothing from
 the model's answer is logged - only field names, confidences and error types.
@@ -31,25 +31,13 @@ from src.constants import (
     RECEIVED_DATE_SOURCES,
 )
 from src.image_preprocessor import resize_for_model
-from src.llm_provider import (
-    THINKING_LEVELS,
-    ImagePart,
-    LLMError,
-    LLMQuotaError,
-    ModelReply,
-    ModelRequest,
-    get_provider,
-)
+from src import claude_client
+from src.claude_client import THINKING_LEVELS, ImagePart, LLMError, LLMQuotaError, ModelReply, ModelRequest
 from src.validators import list_approved_senders
 
 logger = logging.getLogger(__name__)
 
 NAME_KEYS = ("first_name", "last_name")
-
-# Provider-neutral errors. The Gemini names stay as aliases for the evaluation scripts.
-GeminiError = LLMError
-GeminiQuotaError = LLMQuotaError
-
 
 def image_part(image: Image.Image, max_side: int) -> ImagePart:
     """Encode an image as JPEG, downscaled to max_side."""
@@ -74,7 +62,9 @@ def _parse_json(text: Optional[str]) -> dict:
 
 # ------------------------------------------------------------------ token usage
 
-_MEDIA_RESOLUTIONS = ("low", "medium", "high")
+# Image-detail tag per request purpose, hashed into the dev-cache key. It no longer changes the request; it
+# stays in the key so the cached answers of earlier runs keep their keys (they save money).
+_CACHE_DETAIL = {"orientation": "low", "split": "medium"}
 
 _usage_lock = threading.Lock()
 _usage: dict = {}  # purpose -> {"requests", "prompt_tokens", "output_tokens", "cache_*_tokens", "models"}
@@ -126,15 +116,12 @@ def reset_usage() -> None:
 _cache_warned = threading.Event()
 
 
-def _cache_key(contents: list, schema: dict, system_instruction: Optional[str],
-               media_resolution: str, thinking_level: Optional[str] = None,
-               model_id: Optional[str] = None) -> str:
-    """SHA-256 of everything that determines the answer: provider/model, schema, prompt, images, thinking
-    level. The thinking level is hashed only when set, so keys of requests without it never change.
-    model_id defaults to GEMINI_MODEL, which keeps the keys of the existing Gemini cache."""
+def _cache_key(contents: list, schema: dict, system_instruction: Optional[str], detail: str,
+               thinking_level: Optional[str], model_id: str) -> str:
+    """SHA-256 of everything that determines the answer: model and settings (claude_client.cache_id), schema,
+    prompt, images, thinking level. The thinking level is hashed only when set (stable keys)."""
     h = hashlib.sha256()
-    pieces = [model_id if model_id is not None else config.GEMINI_MODEL,
-              json.dumps(schema, sort_keys=True, ensure_ascii=False), system_instruction or "", media_resolution]
+    pieces = [model_id, json.dumps(schema, sort_keys=True, ensure_ascii=False), system_instruction or "", detail]
     if thinking_level:
         pieces.append(f"thinking_level={thinking_level}")
     for piece in pieces:
@@ -184,31 +171,27 @@ def clear_dev_cache() -> int:
 
 def _call_model(contents: list, request: ModelRequest) -> ModelReply:
     """The single place where a request leaves the app (the evaluation scripts guard this call)."""
-    return get_provider().call(contents, request)
+    return claude_client.call(contents, request)
 
 
 def generate_json(contents: list, schema: dict, *, system_instruction: Optional[str] = None,
-                  media_resolution: str = "high", purpose: str = "other",
-                  thinking_level: Optional[str] = None) -> dict:
-    """Call the configured model (LLM_PROVIDER) with structured JSON output; return the parsed object.
+                  purpose: str = "other", thinking_level: Optional[str] = None) -> dict:
+    """Call Claude with structured JSON output and return the parsed object.
 
-    contents: prompt strings and ImageParts (see image_part). schema: Gemini schema dialect, converted
-    for Claude. Transient HTTP errors are retried by the provider's client; unparsable JSON is retried
+    contents: prompt strings and ImageParts (see image_part). schema: compact notation, converted to JSON
+    Schema by claude_client. Transient HTTP errors are retried by the SDK; unparsable JSON is retried
     INVALID_JSON_RETRIES more times. Raises LLMError (LLMQuotaError: stop the run) on failure.
-    media_resolution ("low" | "medium" | "high") sets how many tokens each image costs (Gemini only).
-    thinking_level (one of THINKING_LEVELS) overrides the default thinking (Claude: mapped to effort).
-    With DEV_CACHE on (development only), identical requests are answered from disk.
+    purpose ("extract", "split", ...) sets effort and thinking; thinking_level (one of THINKING_LEVELS)
+    overrides the effort. With DEV_CACHE on (development only), identical requests are answered from disk.
     """
-    if media_resolution not in _MEDIA_RESOLUTIONS:
-        raise ValueError(f"media_resolution must be one of {list(_MEDIA_RESOLUTIONS)}")
     if thinking_level is not None and thinking_level not in THINKING_LEVELS:
         raise ValueError(f"thinking_level must be one of {THINKING_LEVELS}")
-    request = ModelRequest(schema=schema, system_instruction=system_instruction,
-                           media_resolution=media_resolution, thinking_level=thinking_level, purpose=purpose)
+    request = ModelRequest(schema=schema, system_instruction=system_instruction, thinking_level=thinking_level,
+                           purpose=purpose)
     cache_key = None
     if config.DEV_CACHE:
-        cache_key = _cache_key(contents, schema, system_instruction, media_resolution, thinking_level,
-                               model_id=get_provider().cache_id(request))
+        cache_key = _cache_key(contents, schema, system_instruction, _CACHE_DETAIL.get(purpose, "high"),
+                               thinking_level, model_id=claude_client.cache_id(request))
         cached = _cache_get(cache_key)
         if cached is not None:
             return cached
@@ -264,14 +247,10 @@ def _value_schema(key: str, sender_names: list) -> dict:
     return {"type": "STRING", "nullable": True}
 
 
-def build_schema(sender_names: list, labelled_confidence: bool = False) -> dict:
-    """Response schema: form_type plus {value, confidence} per field.
-
-    labelled_confidence (Claude): confidence is "high" | "medium" | "low" and every field also gets a
-    short source_note. The Gemini schema (default) is unchanged.
-    """
-    confidence_schema = ({"type": "STRING", "enum": list(CONFIDENCE_LABELS)} if labelled_confidence
-                         else {"type": "NUMBER"})
+def build_schema(sender_names: list) -> dict:
+    """Response schema: form_type plus, per field, value, confidence ("high" | "medium" | "low"), status,
+    source_note and (single-value fields) raw_text; collection_date for the received-date check."""
+    confidence_schema = {"type": "STRING", "enum": list(CONFIDENCE_LABELS)}
     props = {
         "form_type": {
             "type": "OBJECT",
@@ -286,14 +265,13 @@ def build_schema(sender_names: list, labelled_confidence: bool = False) -> dict:
         field_props = {"value": _value_schema(key, sender_names), "confidence": dict(confidence_schema),
                        "status": {"type": "STRING", "enum": list(FIELD_STATUSES)}}
         required = ["value", "confidence", "status"]
-        if labelled_confidence:
-            # raw_text: plain string ("" = none) and single-value fields only - with nullable unions or on the
-            # list fields too, the compiled grammar was too large for the API (400).
-            if key not in LIST_FIELDS:
-                field_props["raw_text"] = {"type": "STRING"}
-                required.append("raw_text")
-            field_props["source_note"] = {"type": "STRING"}
-            required.append("source_note")
+        # raw_text: plain string ("" = none) and single-value fields only - with nullable unions or on the
+        # list fields too, the compiled grammar was too large for the API (400).
+        if key not in LIST_FIELDS:
+            field_props["raw_text"] = {"type": "STRING"}
+            required.append("raw_text")
+        field_props["source_note"] = {"type": "STRING"}
+        required.append("source_note")
         if key == "received_date":
             field_props["received_date_source"] = {"type": "STRING", "enum": list(RECEIVED_DATE_SOURCES)}
             required.append("received_date_source")
@@ -334,12 +312,11 @@ def build_schema(sender_names: list, labelled_confidence: bool = False) -> dict:
             "propertyOrdering": ["field", "page", "box_2d"],
         },
     }
-    if labelled_confidence:
-        props["collection_date"] = {
-            "type": "OBJECT",
-            "properties": {"value": {"type": "STRING"}, "confidence": dict(confidence_schema)},
-            "required": ["value", "confidence"],
-        }
+    props["collection_date"] = {
+        "type": "OBJECT",
+        "properties": {"value": {"type": "STRING"}, "confidence": dict(confidence_schema)},
+        "required": ["value", "confidence"],
+    }
     return {
         "type": "OBJECT",
         "properties": props,
@@ -348,9 +325,9 @@ def build_schema(sender_names: list, labelled_confidence: bool = False) -> dict:
     }
 
 
-# Appended to the extraction prompt for Claude (labelled confidence). The rules above it stay word for
-# word; this only maps their numeric confidence bands onto the labels the Claude schema asks for.
-LABELLED_CONFIDENCE_RULES = """
+# Appended to prompts/extraction_prompt.txt. The rules in that file stay word for word; this maps their
+# numeric confidence bands onto the labels the schema asks for, and adds the output-only fields.
+EXTRACTION_RULES = """
 ==========================================================================
 CONFIDENCE LABELS AND SOURCE NOTES (for this response format)
 ==========================================================================
@@ -371,16 +348,19 @@ it is empty, e.g. "GLC sticker, page 1 top left" or "stamp present, date smudged
 a number in source_note. Use an empty string when there is nothing to say.
 collection_date: the date the SAMPLE WAS TAKEN, only when the form states it ("תאריך לקיחה", "תאריך לקיחת הדגימה",
 "נלקח בתאריך"), copied as written; empty string otherwise. It is NOT the received date and is only used to check it.
+
+ZOOMED CROPS (when the request includes them, after the full page):
+The zoomed crops are only magnified views to help legibility. Highlighting does NOT indicate which field a value belongs to. Some highlighted values are decoys (visit date, intake date, form date). Identify every field only from its printed label and position on the full page.
 """
 
 
-def load_prompt(sender_names: list, labelled_confidence: bool = False) -> str:
+def load_prompt(sender_names: list) -> str:
     template = config.PROMPT_PATH.read_text(encoding="utf-8")
     name_rules = "\n".join(f"- {where} => {order}" for where, order in NAME_ORDER_CONVENTIONS)
     prompt = (template
               .replace("{{NAME_ORDER_RULES}}", name_rules)
               .replace("{{APPROVED_SENDERS}}", "\n".join(f"- {n}" for n in sender_names)))
-    return prompt + LABELLED_CONFIDENCE_RULES if labelled_confidence else prompt
+    return prompt + EXTRACTION_RULES
 
 
 def _confidence(value) -> float:
@@ -500,9 +480,8 @@ def extract_form(images: list, sender_names: Optional[list] = None, crop_images:
                  form_label: str = "form") -> ExtractionResult:
     """Extract all fields from one form's page images. Never raises on API problems.
 
-    crop_images: the same pages at full 300 DPI resolution (original pixels). With HIGHLIGHT_CROPS on and the
-    provider in HIGHLIGHT_CROPS_PROVIDERS (default: Claude only), zoomed crops of their highlighted regions are
-    added to the request; a page without highlighting adds nothing.
+    crop_images: the same pages at full 300 DPI resolution (original pixels). With HIGHLIGHT_CROPS on, zoomed
+    crops of their highlighted regions are added to the request; a page without highlighting adds nothing.
     """
     from src.highlight_crops import CROP_IMAGE_MAX_SIDE, crop_contents, highlight_crops, save_debug_crops
 
@@ -512,17 +491,15 @@ def extract_form(images: list, sender_names: Optional[list] = None, crop_images:
         if len(images) > 1:
             contents.append(f"Page {i} of {len(images)}:")
         contents.append(image_part(img, config.EXTRACTION_IMAGE_MAX_SIDE))
-    provider = get_provider()
     crops = []
-    if crop_images and provider.name in config.HIGHLIGHT_CROPS_PROVIDERS and config.HIGHLIGHT_CROPS_ENABLED:
+    if crop_images and config.HIGHLIGHT_CROPS_ENABLED:
         crops = highlight_crops(crop_images)
         save_debug_crops(crops, form_label)
         contents += crop_contents(crops, len(images), image_part, CROP_IMAGE_MAX_SIDE)
     contents.append("Extract the fields from this form now.")
-    labelled = provider.labelled_confidence
     try:
-        data = generate_json(contents, build_schema(sender_names, labelled),
-                             system_instruction=load_prompt(sender_names, labelled), purpose="extract")
+        data = generate_json(contents, build_schema(sender_names),
+                             system_instruction=load_prompt(sender_names), purpose="extract")
     except LLMQuotaError:
         raise  # the caller stops the run; no point in sending more requests
     except LLMError as exc:
@@ -669,7 +646,7 @@ def verify_names(images: list, extraction: ExtractionResult) -> NameCheck:
     for i, (_, crop) in enumerate(crops, start=1):
         contents += [f"Crop {i}:", image_part(crop, NAME_CROP_MAX_SIDE)]
     try:
-        data = generate_json(contents, NAME_CHECK_SCHEMA, media_resolution="high", purpose="verify_names")
+        data = generate_json(contents, NAME_CHECK_SCHEMA, purpose="verify_names")
     except LLMQuotaError:
         raise
     except LLMError as exc:

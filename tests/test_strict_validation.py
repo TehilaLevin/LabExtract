@@ -133,13 +133,12 @@ def test_raw_text_and_collection_date_are_parsed():
 
 
 def test_claude_schema_has_raw_text_and_collection_date():
-    from src import llm_provider as lp
+    from src import claude_client as lp
     import json
 
-    out = lp.to_json_schema(ee.build_schema(["כללית"], labelled_confidence=True))
+    out = lp.to_json_schema(ee.build_schema(["כללית"]))
     assert out["properties"]["id_number"]["properties"]["raw_text"] == {"type": "string"}
     assert "collection_date" in out["required"]
     assert json.dumps(out).count('"null"') <= 16                     # API limit on union-typed parameters
-    prompt = ee.load_prompt(["כללית"], labelled_confidence=True)
+    prompt = ee.load_prompt(["כללית"])
     assert "If it is not legible, return null. Do not guess. Do not complete names to common names." in prompt
-    assert "collection_date" not in json.dumps(ee.build_schema(["כללית"]))  # Gemini schema unchanged

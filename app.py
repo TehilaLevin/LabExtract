@@ -13,7 +13,7 @@ Streamlit limits and how they are handled:
   bordered card per field; a flagged card gets an orange frame through CSS on its key class
   ("st-key-<key>"). Read-only tables (summary, export preview) are coloured with a pandas Styler in
   st.dataframe, which does support per-cell styles.
-- Every interaction reruns the script. The model (LLM_PROVIDER) is called only from the "Extract" button; the results are
+- Every interaction reruns the script. Claude is called only from the "Extract" button; the results are
   kept in st.session_state, so reruns never call it again. The field inputs sit in an st.form, so typing
   does not rerun; values are saved into FormReview.edits on submit. Widget state cannot hold the edits,
   because Streamlit drops the state of a widget that was not rendered in the last run (other form shown).
@@ -44,7 +44,7 @@ from src.constants import (
     SUGGESTION_LABEL,
 )
 from src.excel_exporter import to_xlsx_bytes
-from src.llm_provider import LLMError, LLMQuotaError, check_configured
+from src.claude_client import LLMError, LLMQuotaError, check_configured
 from src.validators import list_approved_senders
 
 st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide")
@@ -104,11 +104,11 @@ def reviews() -> list:
 
 
 def config_problem():
-    """Hebrew message when the selected provider's API key or model is not configured, else None."""
+    """Hebrew message when the Claude API key or settings are not configured, else None."""
     try:
         check_configured()
     except RuntimeError as exc:
-        return f"ההגדרות חסרות ({config.LLM_PROVIDER}): {exc}"
+        return f"ההגדרות חסרות: {exc}"
     return None
 
 

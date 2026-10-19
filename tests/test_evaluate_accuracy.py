@@ -85,12 +85,11 @@ def test_saved_summary_has_counts_only_and_comparison(capsys):
 @pytest.mark.parametrize("change, reason", [
     (lambda s: s.update(labels_sha256="other"), "different ground-truth rows or labels"),
     (lambda s: s.update(rows=[["g.pdf", "1"]]), "different ground-truth rows or labels"),
-    (lambda s: s.update(run={"model_sha256": "x", "complete": True}), "different model"),
     (lambda s: s.update(run={"complete": False}), "baseline run is incomplete"),
 ])
 def test_comparison_refuses_different_runs(capsys, change, reason):
     now = ev.counts_only(ev.summarize([(TRUTH, GOOD)]), truth_rows=[TRUTH],
-                         info={"model_sha256": "m", "complete": True})
+                         info={"config": {"claude_model": "m"}, "complete": True})
     base = json.loads(json.dumps(now))
     change(base)
     assert ev.print_comparison(base, now) is False
@@ -156,7 +155,6 @@ def guarded(monkeypatch):
     monkeypatch.setattr(ee, "_call_model", ee._call_model)  # restored after
     monkeypatch.setattr(ee, "generate_json", ee.generate_json)                                    # restored after
     monkeypatch.setattr(ee, "_call_model", lambda *a: pytest.fail("live API call attempted"))
-    monkeypatch.setenv("GEMINI_MODEL", "test-model")  # setattr would read the missing value first
     return ee
 
 
@@ -166,7 +164,7 @@ def test_cache_only_never_calls_the_api(guarded):
     ee = guarded
     stats = {"cache_misses": 0}
     ev._block_live_calls(stats)
-    with pytest.raises(ee.GeminiError, match="cache-only"):
+    with pytest.raises(ee.LLMError, match="cache-only"):
         ee.generate_json(["hello"], {"type": "OBJECT"}, purpose="extract")
     assert stats["cache_misses"] == 1 and stats["misses_by_stage"] == {"extract": 1} and config.DEV_CACHE is True
 
@@ -183,7 +181,7 @@ def test_request_budget_stops_live_calls(guarded, monkeypatch):
     ev.install_request_guard(stats, max_requests=2)
     ee.generate_json(["a"], {"type": "OBJECT"}, purpose="extract")
     ee.generate_json(["b"], {"type": "OBJECT"}, purpose="reread_fields")
-    with pytest.raises(ee.GeminiQuotaError, match="max-requests"):
+    with pytest.raises(ee.LLMQuotaError, match="max-requests"):
         ee.generate_json(["c"], {"type": "OBJECT"}, purpose="extract")
     assert len(calls) == 2 and stats["budget_exhausted"] is True
     assert stats["live_by_stage"] == {"extract": 1, "reread_fields": 1}
@@ -289,3 +287,20 @@ def test_groups_report_per_split_and_tag(capsys):
     ev.print_groups(groups)
     out = capsys.readouterr().out
     assert "Per split:" in out and "silent_errors=1" in out and "111111" not in out
+
+
+def test_comparison_of_claude_configurations_prints_the_changed_settings(capsys):
+    def run(cfg):
+        return ev.counts_only(ev.summarize([(TRUTH, GOOD)]), truth_rows=[TRUTH], info={"config": cfg, "complete": True})
+
+    base = run({"claude_model": "claude-opus-5-5", "highlight_crops_enabled": False, "claude_effort": "high"})
+    now = run({"claude_model": "claude-sonnet-5-5", "highlight_crops_enabled": True, "claude_effort": "high"})
+    assert ev.print_comparison(base, now) is True                       # a model change is comparable
+    out = capsys.readouterr().out
+    assert "claude_model claude-opus-5-5 -> claude-sonnet-5-5" in out and "highlight_crops_enabled False -> True" in out
+    assert "claude_effort" not in out.split("settings:")[1].splitlines()[0]
+
+
+def test_run_config_records_the_claude_settings():
+    cfg = ev.run_config()
+    assert cfg["claude_model"] == ev.config.CLAUDE_MODEL and "highlight_crops_enabled" in cfg
