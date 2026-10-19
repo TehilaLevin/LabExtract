@@ -6,3 +6,4 @@ python-dotenv
 pdf2image
 pillow
 pytest
+opencv-python
