@@ -163,3 +163,98 @@ def test_use_model_restores_the_configured_model():
     with hx.use_model("other-model"):
         assert config.GEMINI_MODEL == "other-model"
     assert ("GEMINI_MODEL" in vars(config)) == had
+
+
+# ---- labelled forms: DPI x preprocessing x thinking ------------------------------------
+
+def test_control_prompt_contains_no_ground_truth_and_no_hebrew():
+    for word in hx.SAMPLE_TRUTH:
+        assert word not in hx.CONTROL_PROMPT
+    assert not re.search(r"[֐-׿]", hx.CONTROL_PROMPT)
+
+
+def test_parse_arm():
+    assert hx.parse_arm("600:clahe:high") == (600, "clahe", "high")
+    for bad in ("450:none:default", "300:sharpen:default", "300:none:max"):
+        with pytest.raises(SystemExit):
+            hx.parse_arm(bad)
+
+
+def test_deskew_angle():
+    assert hx.deskew_angle(["autocontrast", "deskew -1.25"]) == -1.25
+    assert hx.deskew_angle(["autocontrast"]) == 0.0
+
+
+def _page_with_ink(boxes):
+    img = Image.new("RGB", (1000, 1400), "white")
+    draw = ImageDraw.Draw(img)
+    for y0, x0, y1, x1 in boxes:
+        draw.rectangle([x0, y0 * 1.4, x1, y1 * 1.4], fill="black")
+    return img
+
+
+def test_empty_box_crop_area_is_blank_and_avoids_names():
+    ink = [(150, 150, 850, 480)]                       # everything left of x=480 is ink
+    img = _page_with_ink(ink)
+    name = (600, 600, 640, 800)
+    box = hx.find_empty_box(img, (40, 150), [hx._padded(name, img.size)])
+    assert box is not None
+    shown = hx._padded(box, img.size)
+    assert not hx._overlaps(shown, ink[0]) and not hx._overlaps(shown, hx._padded(name, img.size))
+    assert min(shown[:2]) >= hx.EMPTY_MARGIN and max(shown[2:]) <= 1000 - hx.EMPTY_MARGIN
+
+
+def test_empty_box_none_when_nothing_is_blank():
+    img = _page_with_ink([(0, 0, 1000, 1000)])
+    assert hx.find_empty_box(img, (40, 150), []) is None
+
+
+def test_crop_target_covers_the_same_area_at_both_dpis():
+    box = (200, 300, 260, 700)
+    small, big = Image.new("RGB", (1000, 1400)), Image.new("RGB", (2000, 2800))
+    a, b = hx.crop_target(small, box, 300), hx.crop_target(big, box, 600)
+    assert abs(b.size[0] - 2 * a.size[0]) <= 1 and abs(b.size[1] - 2 * a.size[1]) <= 1  # int rounding
+
+
+@pytest.mark.parametrize("kind, reading, expected", [
+    ("name", _reading("ישראל ישראלי"), "correct"),
+    ("name", _reading("ישראל"), "partial"),
+    ("name", _reading("יסמין יוסף"), "invented"),
+    ("control_empty", _reading(None, legible=False), "abstain"),
+    ("control_empty", _reading("יוסי"), "guess"),
+    ("control_text", _reading("939273"), "guess"),       # any text returned as a name is a guess
+    ("control_text", _reading("", legible=True), "abstain"),
+    ("control_text", {"error": "GeminiError"}, "error"),
+])
+def test_score_reading(kind, reading, expected):
+    assert hx.score_reading(kind, reading) == expected
+
+
+def _row(arm, kind, name, legible=True, conf=0.9):
+    reading = _reading(name, legible, conf)
+    return {"arm": arm, "kind": kind, "category": hx.score_reading(kind, reading),
+            "accepted": hx.accepted(reading)}
+
+
+def test_summarize_arms_counts_silent_errors_and_guesses():
+    rows = [_row("a", "name", "ישראל ישראלי"), _row("a", "name", "יסמין יוסף"),
+            _row("a", "name", "יסמין יוסף", conf=0.5), _row("a", "control_empty", "יוסי"),
+            _row("a", "control_text", None, legible=False)]
+    c = hx.summarize_arms(rows)["a"]
+    assert (c["name_n"], c["name_correct"], c["name_invented"], c["name_silent"]) == (3, 1, 2, 1)
+    assert (c["control_n"], c["control_guess"], c["control_silent"], c["control_abstain"]) == (2, 1, 1, 1)
+
+
+def test_pick_best_variant_rule():
+    rows = [_row("300:clahe:default", "name", "ישראל ישראלי"),
+            _row("300:lines:default", "name", "ישראל ישראלי"),
+            _row("300:lines:default", "name", "יסמין יוסף")]
+    assert hx.pick_best_variant(rows) == "clahe"       # same correct, fewer invented
+    assert hx.pick_best_variant([]) == hx.PILOT_VARIANTS[0]   # no signal: the fixed order decides
+
+
+def test_estimate_labelled_counts_requests():
+    steps = hx.estimate_labelled(5, 10, ["300:none:default", "600:combo:high"], draws=2, pilot=True,
+                                 price=(1.0, 1.0))
+    assert [n for _, n, _ in steps] == [5, 5 * len(hx.PILOT_VARIANTS), 30, 30]
+    assert steps[3][2] > steps[2][2]                   # high thinking costs more

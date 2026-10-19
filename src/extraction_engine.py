@@ -154,11 +154,15 @@ _cache_warned = threading.Event()
 
 
 def _cache_key(contents: list, schema: dict, system_instruction: Optional[str],
-               media_resolution: str) -> str:
-    """SHA-256 of everything that determines the answer: model, schema, prompt, images."""
+               media_resolution: str, thinking_level: Optional[str] = None) -> str:
+    """SHA-256 of everything that determines the answer: model, schema, prompt, images, thinking level.
+    The thinking level is hashed only when set, so keys of requests without it never change."""
     h = hashlib.sha256()
-    for piece in (config.GEMINI_MODEL, json.dumps(schema, sort_keys=True, ensure_ascii=False),
-                  system_instruction or "", media_resolution):
+    pieces = [config.GEMINI_MODEL, json.dumps(schema, sort_keys=True, ensure_ascii=False),
+              system_instruction or "", media_resolution]
+    if thinking_level:
+        pieces.append(f"thinking_level={thinking_level}")
+    for piece in pieces:
         h.update(piece.encode("utf-8"))
         h.update(b"\x00")
     for item in contents:
@@ -224,20 +228,27 @@ def _generate_with_transport_retry(contents: list, cfg: types.GenerateContentCon
             raise GeminiError(f"Gemini request failed: {type(exc).__name__}") from None
 
 
+THINKING_LEVELS = ("minimal", "low", "medium", "high")
+
+
 def generate_json(contents: list, schema: dict, *, system_instruction: Optional[str] = None,
-                  media_resolution: str = "high", purpose: str = "other") -> dict:
+                  media_resolution: str = "high", purpose: str = "other",
+                  thinking_level: Optional[str] = None) -> dict:
     """Call Gemini with structured JSON output and return the parsed object.
 
     Transient HTTP errors are retried by the client (HttpRetryOptions); unparsable
     JSON is retried INVALID_JSON_RETRIES more times. Raises GeminiError on failure.
     media_resolution ("low" | "medium" | "high") sets how many tokens each image costs.
+    thinking_level (one of THINKING_LEVELS) overrides the model's default thinking; None keeps the default.
     With DEV_CACHE on (development only), identical requests are answered from disk.
     """
     if media_resolution not in _MEDIA_RESOLUTIONS:
         raise ValueError(f"media_resolution must be one of {sorted(_MEDIA_RESOLUTIONS)}")
+    if thinking_level is not None and thinking_level not in THINKING_LEVELS:
+        raise ValueError(f"thinking_level must be one of {THINKING_LEVELS}")
     cache_key = None
     if config.DEV_CACHE:
-        cache_key = _cache_key(contents, schema, system_instruction, media_resolution)
+        cache_key = _cache_key(contents, schema, system_instruction, media_resolution, thinking_level)
         cached = _cache_get(cache_key)
         if cached is not None:
             return cached
@@ -246,6 +257,8 @@ def generate_json(contents: list, schema: dict, *, system_instruction: Optional[
         response_schema=schema,
         system_instruction=system_instruction,
         media_resolution=_MEDIA_RESOLUTIONS[media_resolution],
+        thinking_config=(types.ThinkingConfig(thinking_level=types.ThinkingLevel(thinking_level.upper()))
+                         if thinking_level else None),
     )
     last_error = "unknown"
     for attempt in range(1 + config.INVALID_JSON_RETRIES):

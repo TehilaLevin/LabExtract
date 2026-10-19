@@ -644,3 +644,26 @@ def test_commitment_equal_to_id_is_removed_and_flagged(commitments, expected_val
 def test_commitment_kept_when_no_id_or_different():
     assert "commitment_numbers" not in _record(id_number={"value": None, "confidence": 0}).flags
     assert _record().values["commitment_numbers"] == "50364186"
+
+
+# ---- thinking level ---------------------------------------------------------------------
+
+def test_thinking_level_is_sent_and_keys_the_cache(monkeypatch):
+    from google.genai import types
+
+    sent = {}
+
+    def fake(contents, cfg):
+        sent["cfg"] = cfg
+        return _FakeResponse()
+
+    monkeypatch.setattr(ee, "_generate_with_transport_retry", fake)
+    ee.generate_json(["x"], {"type": "OBJECT"}, thinking_level="high")
+    assert sent["cfg"].thinking_config.thinking_level == types.ThinkingLevel.HIGH
+    ee.generate_json(["x"], {"type": "OBJECT"})
+    assert sent["cfg"].thinking_config is None          # default: the model's own thinking
+    with pytest.raises(ValueError):
+        ee.generate_json(["x"], {"type": "OBJECT"}, thinking_level="max")
+    plain = ee._cache_key(["x"], {}, None, "high")
+    assert ee._cache_key(["x"], {}, None, "high", None) == plain   # existing cache keys unchanged
+    assert ee._cache_key(["x"], {}, None, "high", "high") != plain
