@@ -50,6 +50,9 @@ st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide")
 
 SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירת טפסים", "export": "ייצוא"}
 UPLOAD_TYPES = ["pdf", "png", "jpg", "jpeg"]
+DEV_CACHE_BANNER = ("**מצב פיתוח: DEV_CACHE פעיל.** תשובות Gemini (שעלולות לכלול נתונים אישיים) נשמרות בדיסק "
+                    "בתיקייה data/dev_cache, כדי שהרצה חוזרת על אותם עמודים לא תעלה כסף. "
+                    "לקבצי הדוגמה בלבד – אסור להעלות טפסים אמיתיים במצב זה.")
 
 # RTL throughout. Inputs use unicode-bidi: plaintext so an ID or a date is laid out by its own content.
 # st.dataframe draws on a canvas that ignores CSS direction; its columns are ordered right-to-left instead.
@@ -382,6 +385,8 @@ def main() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("LabExtract")
     st.caption("חילוץ נתונים מטפסי התחייבות · שדה ריק ומסומן עדיף תמיד על ערך מנוחש")
+    if config.DEV_CACHE:
+        st.error(DEV_CACHE_BANNER, icon="⚠️")
 
     has_results = bool(reviews())
     if not has_results:

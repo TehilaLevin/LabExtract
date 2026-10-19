@@ -139,6 +139,14 @@ def test_export_without_warning_when_all_approved():
     assert not at.warning and not at.checkbox
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_dev_cache_banner_only_while_the_cache_is_on(monkeypatch, enabled):
+    monkeypatch.setattr("src.config.DEV_CACHE", enabled)
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    shown = any("DEV_CACHE פעיל" in e.value for e in at.error)
+    assert shown is enabled
+
+
 def test_clear_all_returns_to_upload():
     at = _app([_record(1)])
     at.button(key="clear_all").click().run()
