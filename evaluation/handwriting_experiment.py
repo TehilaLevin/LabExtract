@@ -575,8 +575,14 @@ def cmd_report(args) -> None:
 LABELLED_BOXES_PATH = HW_DIR / "labelled_boxes.json"   # coordinates only (git-ignored folder)
 DPIS = (300, 600)
 THINKING = ("default", "high")
+LABELLED_MODELS = ("flash", "pro")      # flash = GEMINI_MODEL, pro = --pro-model
+DEFAULT_PRO_MODEL = "gemini-3.1-pro-preview"
 # Pilot rule, fixed before any result is seen: most correct names; tie -> fewest invented; tie -> this order.
 PILOT_VARIANTS = ("combo", "clahe", "lines", "upscale", "denoise", "gray", "adaptive")
+PILOT_ARM = "flash:300:{}:high"         # the pilot reads the names with each variant in this arm
+# Output-token estimates per request (incl. thinking) for the cost estimate; the run reports measured cost.
+EST_LABELLED_OUTPUT = {"default": 2000, "high": 6000}
+EST_LABELLED_OUTPUT_HIGH_BOUND = 10000
 # One name crop per form: the first name location. (Sample page 13 has a second, page-wide location -
 # sticker + ID + another name field - that is not a name crop.)
 NAMES_PER_PAGE = 1
@@ -603,11 +609,20 @@ CONTROL_SCHEMA = {
 
 
 def parse_arm(arm: str) -> tuple:
-    """"600:clahe:high" -> (600, "clahe", "high")."""
-    dpi, variant, thinking = arm.split(":")
-    if int(dpi) not in DPIS or variant not in VARIANTS or thinking not in THINKING:
-        raise SystemExit(f"Bad arm {arm!r}: DPI in {DPIS}, variant in {list(VARIANTS)}, thinking in {THINKING}")
-    return int(dpi), variant, thinking
+    """"pro:300:clahe:high" -> ("pro", 300, "clahe", "high")."""
+    parts = arm.split(":")
+    if len(parts) != 4:
+        raise SystemExit(f"Bad arm {arm!r}: expected MODEL:DPI:VARIANT:THINKING")
+    alias, dpi, variant, thinking = parts
+    if (alias not in LABELLED_MODELS or not dpi.isdigit() or int(dpi) not in DPIS or variant not in VARIANTS
+            or thinking not in THINKING):
+        raise SystemExit(f"Bad arm {arm!r}: model in {LABELLED_MODELS}, DPI in {DPIS}, variant in "
+                         f"{list(VARIANTS)}, thinking in {THINKING}")
+    return alias, int(dpi), variant, thinking
+
+
+def labelled_models(args) -> dict:
+    return {"flash": config.GEMINI_MODEL, "pro": args.pro_model or DEFAULT_PRO_MODEL}
 
 
 def deskew_angle(steps: list) -> float:
@@ -776,28 +791,36 @@ def summarize_arms(rows: list) -> OrderedDict:
 
 
 def pick_best_variant(rows: list) -> str:
-    """The pilot rule (PILOT_VARIANTS): most correct names, then fewest invented, then the fixed order."""
+    """The pilot rule (PILOT_VARIANTS, read in PILOT_ARM): most correct names, then fewest invented, then
+    the fixed order."""
     summary = summarize_arms(rows)
 
     def rank(variant: str) -> tuple:
-        c = summary.get(f"300:{variant}:default", Counter())
+        c = summary.get(PILOT_ARM.format(variant), Counter())
         return (-c["name_correct"], c["name_invented"] + c["name_partial"], PILOT_VARIANTS.index(variant))
 
     return min(PILOT_VARIANTS, key=rank)
 
 
 def estimate_labelled(n_names: int, n_controls: int, grid_arms: list, draws: int, pilot: bool,
-                      price: tuple) -> list:
-    """[(step, requests, usd)] from the token estimates (high thinking: output estimated at 3x)."""
-    per = {"default": cost_usd(EST_INPUT_TOKENS, EST_OUTPUT_TOKENS["flash"], price),
-           "high": cost_usd(EST_INPUT_TOKENS, 3 * EST_OUTPUT_TOKENS["flash"], price)}
-    steps = [("locate text controls", 5, 5 * cost_usd(2500, 1500, price))]
+                      prices: dict) -> list:
+    """[(step, requests, usd, usd_high_bound)] from the token estimates. prices: model alias -> (in, out).
+    The bound assumes EST_LABELLED_OUTPUT_HIGH_BOUND output tokens for every high-thinking request."""
+    def per(alias: str, thinking: str, bound: bool = False) -> float:
+        out = EST_LABELLED_OUTPUT_HIGH_BOUND if bound and thinking == "high" else EST_LABELLED_OUTPUT[thinking]
+        return cost_usd(EST_INPUT_TOKENS, out, prices[alias])
+
+    locate = 5 * cost_usd(2500, 1500, prices["flash"])
+    steps = [("locate text controls", 5, locate, locate)]
     if pilot:
+        alias, _, _, thinking = parse_arm(PILOT_ARM.format(PILOT_VARIANTS[0]))
         n = len(PILOT_VARIANTS) * n_names
-        steps.append(("pilot: pick the best preprocessing", n, n * per["default"]))
+        steps.append(("pilot: pick the best preprocessing", n, n * per(alias, thinking),
+                      n * per(alias, thinking, bound=True)))
     for arm in grid_arms:
+        alias, _, _, thinking = parse_arm(arm)
         n = (n_names + n_controls) * draws
-        steps.append((arm, n, n * per[parse_arm(arm)[2]]))
+        steps.append((arm, n, n * per(alias, thinking), n * per(alias, thinking, bound=True)))
     return steps
 
 
@@ -822,13 +845,14 @@ def cmd_labelled_prepare(args) -> None:
     if args.arms:
         n_names = kinds["name"]
         n_controls = kinds["control_empty"] + max(kinds["control_text"], len(pages))  # text controls: ~1/page
-        price = price_for(config.GEMINI_MODEL, _prices(args))
-        total = 0.0
-        for step, n, usd in estimate_labelled(n_names, n_controls, args.arms.split(","), args.draws,
-                                              args.pilot, price):
-            total += usd
-            print(f"  estimate {step:36s} requests={n:<4d} ~${usd:.2f}")
-        print(f"  estimate total ~${total:.2f} ({config.GEMINI_MODEL}; the run reports the measured cost)")
+        models = labelled_models(args)
+        prices = {alias: price_for(model, _prices(args)) for alias, model in models.items()}
+        total = bound = 0.0
+        for step, n, usd, high in estimate_labelled(n_names, n_controls, args.arms.split(","), args.draws,
+                                                    args.pilot, prices):
+            total, bound = total + usd, bound + high
+            print(f"  estimate {step:36s} requests={n:<4d} ~${usd:.2f}  (bound ${high:.2f})")
+        print(f"  estimate total ~${total:.2f}, bound ${bound:.2f}  models: {models}; the run reports measured cost")
 
 
 def cmd_labelled_locate(args) -> None:
@@ -861,7 +885,8 @@ def cmd_labelled_run(args) -> None:
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     for arm in arms:
         parse_arm(arm)
-    price = price_for(config.GEMINI_MODEL, _prices(args))
+    models = labelled_models(args)
+    prices = {alias: price_for(model, _prices(args)) for alias, model in models.items()}
     stats = install_guard(args.max_requests, ("hw_read",))
     original_get, original_put = ee._cache_get, ee._cache_put
     ee._cache_get = lambda key: None if getattr(_local, "fresh", False) else original_get(key)
@@ -871,12 +896,12 @@ def cmd_labelled_run(args) -> None:
     targets = labelled_targets(build_labelled_pages(stats), saved)
     if args.names_only:
         targets = [t for t in targets if t["kind"] == "name"]
-    dpis = sorted({parse_arm(a)[0] for a in arms})
+    dpis = sorted({parse_arm(a)[1] for a in arms})
     crops = render_targets(targets, dpis)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     results, costs = [], {}
     for arm in arms:
-        dpi, variant, thinking = parse_arm(arm)
+        alias, dpi, variant, thinking = parse_arm(arm)
         purpose = f"hw_read:{arm}"
 
         def read(job, dpi=dpi, variant=variant, thinking=thinking, purpose=purpose, arm=arm):
@@ -894,12 +919,12 @@ def cmd_labelled_run(args) -> None:
                     "category": score_reading(target["kind"], reading), "accepted": accepted(reading)}
 
         jobs = [(t, d) for d in range(1, args.draws + 1) for t in targets if (t["id"], dpi) in crops]
-        with ThreadPoolExecutor(max_workers=config.MAX_PARALLEL_REQUESTS) as pool:
+        with use_model(models[alias]), ThreadPoolExecutor(max_workers=config.MAX_PARALLEL_REQUESTS) as pool:
             results += list(pool.map(read, jobs))
         usage = ee.get_usage(purpose)
-        costs[arm] = {"live_requests": usage["requests"], "prompt_tokens": usage["prompt_tokens"],
-                      "output_tokens": usage["output_tokens"],
-                      "usd": cost_usd(usage["prompt_tokens"], usage["output_tokens"], price)}
+        costs[arm] = {"model": models[alias], "live_requests": usage["requests"],
+                      "prompt_tokens": usage["prompt_tokens"], "output_tokens": usage["output_tokens"],
+                      "usd": cost_usd(usage["prompt_tokens"], usage["output_tokens"], prices[alias])}
         if stats["cap_reached"]:
             print("Request cap reached - stopping after this arm.")
             break
@@ -961,7 +986,8 @@ def main() -> None:
     p.add_argument("--consensus", help="ARM1,ARM2: accept a name only when both arms read the same words")
     p = sub.add_parser("labelled-prepare", help="5 labelled forms: crops, previews, cost estimate (no API)")
     p.add_argument("--previews", type=Path)
-    p.add_argument("--arms", help='grid arms "DPI:variant:thinking", e.g. 300:none:default,600:none:high')
+    p.add_argument("--arms", help='grid arms "MODEL:DPI:VARIANT:THINKING", e.g. flash:300:none:high')
+    p.add_argument("--pro-model", help=f"default {DEFAULT_PRO_MODEL}")
     p.add_argument("--draws", type=int, default=2)
     p.add_argument("--pilot", action="store_true", help="include the pilot that picks the preprocessing")
     p.add_argument("--price", action="append", help="MODEL=IN/OUT USD per 1M tokens")
@@ -974,6 +1000,7 @@ def main() -> None:
     p.add_argument("--draws", type=int, default=2)
     p.add_argument("--max-requests", type=int, required=True)
     p.add_argument("--names-only", action="store_true")
+    p.add_argument("--pro-model", help=f"default {DEFAULT_PRO_MODEL}")
     p.add_argument("--pilot", action="store_true", help="report the best variant by the pilot rule")
     p.add_argument("--price", action="append", help="MODEL=IN/OUT USD per 1M tokens")
     p = sub.add_parser("labelled-report")

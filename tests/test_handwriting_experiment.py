@@ -174,8 +174,9 @@ def test_control_prompt_contains_no_ground_truth_and_no_hebrew():
 
 
 def test_parse_arm():
-    assert hx.parse_arm("600:clahe:high") == (600, "clahe", "high")
-    for bad in ("450:none:default", "300:sharpen:default", "300:none:max"):
+    assert hx.parse_arm("pro:600:clahe:high") == ("pro", 600, "clahe", "high")
+    for bad in ("flash:450:none:default", "flash:300:sharpen:default", "flash:300:none:max",
+                "ultra:300:none:high", "300:none:high", "flash:x:none:high"):
         with pytest.raises(SystemExit):
             hx.parse_arm(bad)
 
@@ -246,15 +247,18 @@ def test_summarize_arms_counts_silent_errors_and_guesses():
 
 
 def test_pick_best_variant_rule():
-    rows = [_row("300:clahe:default", "name", "ישראל ישראלי"),
-            _row("300:lines:default", "name", "ישראל ישראלי"),
-            _row("300:lines:default", "name", "יסמין יוסף")]
+    rows = [_row(hx.PILOT_ARM.format("clahe"), "name", "ישראל ישראלי"),
+            _row(hx.PILOT_ARM.format("lines"), "name", "ישראל ישראלי"),
+            _row(hx.PILOT_ARM.format("lines"), "name", "יסמין יוסף")]
     assert hx.pick_best_variant(rows) == "clahe"       # same correct, fewer invented
     assert hx.pick_best_variant([]) == hx.PILOT_VARIANTS[0]   # no signal: the fixed order decides
 
 
 def test_estimate_labelled_counts_requests():
-    steps = hx.estimate_labelled(5, 10, ["300:none:default", "600:combo:high"], draws=2, pilot=True,
-                                 price=(1.0, 1.0))
-    assert [n for _, n, _ in steps] == [5, 5 * len(hx.PILOT_VARIANTS), 30, 30]
+    prices = {"flash": (1.0, 1.0), "pro": (2.0, 10.0)}
+    steps = hx.estimate_labelled(5, 10, ["flash:300:none:default", "flash:300:combo:high", "pro:300:none:high"],
+                                 draws=2, pilot=True, prices=prices)
+    assert [s[1] for s in steps] == [5, 5 * len(hx.PILOT_VARIANTS), 30, 30, 30]
     assert steps[3][2] > steps[2][2]                   # high thinking costs more
+    assert steps[4][2] > steps[3][2]                   # pro costs more
+    assert all(s[3] >= s[2] for s in steps)            # the bound is never below the estimate
