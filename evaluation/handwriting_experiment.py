@@ -681,10 +681,17 @@ def render_page(source_file: str, page_number: int, dpi: int, rotation: int, ang
     return img
 
 
-def crop_target(page: Image.Image, box: tuple, dpi: int) -> Optional[Image.Image]:
-    """Same padding as the pipeline's name crops; the pixel minimum scales with the DPI (same area)."""
-    pixel_box = ee.padded_pixel_box(page.size, tuple(box), ee.NAME_CROP_PAD_X, ee.NAME_CROP_PAD_Y,
-                                    int(ee.NAME_CROP_MIN_PAD_PX * dpi / 300))
+# Handwritten-text controls are cropped tight: the pipeline's name padding pulled printed names (a doctor's
+# name on sample page 13) and the edge of the patient's name (page 3) into these crops.
+CONTROL_TEXT_PAD = (0.05, 0.2, 8)   # pad_x, pad_y (fractions of the box), minimum pixels at 300 DPI
+
+
+def crop_target(page: Image.Image, box: tuple, dpi: int, kind: str = "name") -> Optional[Image.Image]:
+    """Names and empty controls: the pipeline's name-crop padding. Text controls: tight (CONTROL_TEXT_PAD).
+    The pixel minimum scales with the DPI, so every DPI shows the same area."""
+    pad_x, pad_y, min_pad = (CONTROL_TEXT_PAD if kind == "control_text"
+                             else (ee.NAME_CROP_PAD_X, ee.NAME_CROP_PAD_Y, ee.NAME_CROP_MIN_PAD_PX))
+    pixel_box = ee.padded_pixel_box(page.size, tuple(box), pad_x, pad_y, int(min_pad * dpi / 300))
     return page.crop(pixel_box) if pixel_box else None
 
 
@@ -762,7 +769,7 @@ def render_targets(targets: list, dpis=DPIS) -> dict:
             key = (t["source_file"], t["page"], dpi)
             if key not in pages:
                 pages[key] = render_page(t["source_file"], t["page"], dpi, t["rotation"], t["angle"])
-            crop = crop_target(pages[key], t["box"], dpi)
+            crop = crop_target(pages[key], t["box"], dpi, t["kind"])
             if crop is not None:
                 crops[(t["id"], dpi)] = crop
     return crops
