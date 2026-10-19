@@ -1,6 +1,6 @@
 """Split a batch of pages into individual forms (one form = one record).
 
-Two Gemini steps:
+Two model steps:
 1. Orientation (one request per page): the page is shown in 4 rotations (A-D) and the
    model picks the upright one. Measured on the 48 sample pages: asking the model for a
    rotation angle directly was right on 1 of 11 rotated pages (at 0.95 "confidence");
@@ -181,7 +181,7 @@ def _parse_decision(data: dict) -> PageDecision:
 def detect_rotation(image: Image.Image) -> tuple:
     """Return (clockwise rotation that makes the page upright, confidence).
 
-    Raises GeminiError (incl. GeminiQuotaError) on API failure.
+    Raises LLMError (incl. LLMQuotaError) on API failure.
     """
     from src.extraction_engine import generate_json, image_part
 
@@ -197,12 +197,12 @@ def detect_rotation(image: Image.Image) -> tuple:
 
 
 def classify_batch(images: list, context: Optional[Image.Image] = None) -> list:
-    """Ask Gemini about consecutive pages of one file in a single request.
+    """Ask the model about consecutive pages of one file in a single request.
 
-    Returns one PageDecision per image. Raises GeminiError (incl. GeminiQuotaError)
-    on API failure, or GeminiError if the answer does not cover every page exactly once.
+    Returns one PageDecision per image. Raises LLMError (incl. LLMQuotaError)
+    on API failure, or LLMError if the answer does not cover every page exactly once.
     """
-    from src.extraction_engine import GeminiError, generate_json, image_part
+    from src.extraction_engine import LLMError, generate_json, image_part
 
     contents: list = [SPLIT_PROMPT.format(n=len(images))]
     if context is not None:
@@ -216,7 +216,7 @@ def classify_batch(images: list, context: Optional[Image.Image] = None) -> list:
         if isinstance(item, dict) and isinstance(item.get("page_index"), int):
             by_index.setdefault(item["page_index"], item)
     if sorted(by_index) != list(range(1, len(images) + 1)):
-        raise GeminiError("Split answer does not cover every page exactly once")
+        raise LLMError("Split answer does not cover every page exactly once")
     return [_parse_decision(by_index[i]) for i in range(1, len(images) + 1)]
 
 
@@ -238,7 +238,7 @@ def split_forms(pages: list, progress: Optional[Callable[[int, int], None]] = No
     extractor can still read it); a failed classification batch turns its pages into
     separate, flagged forms. After a quota error no further requests are sent.
     """
-    from src.extraction_engine import GeminiError, GeminiQuotaError
+    from src.extraction_engine import LLMError, LLMQuotaError
 
     batches = _batches(pages)
     quota_hit = threading.Event()
@@ -257,8 +257,8 @@ def split_forms(pages: list, progress: Optional[Callable[[int, int], None]] = No
             return 0, 0.0
         try:
             return detect_rotation(pages[i].load())
-        except GeminiError as exc:
-            if isinstance(exc, GeminiQuotaError):
+        except LLMError as exc:
+            if isinstance(exc, LLMQuotaError):
                 quota_hit.set()
             logger.warning("Orientation failed for page %d: %s", i + 1, exc)
             return 0, 0.0
@@ -271,14 +271,14 @@ def split_forms(pages: list, progress: Optional[Callable[[int, int], None]] = No
     def classify(rng: tuple) -> list:
         start, end = rng
         if quota_hit.is_set():
-            return [PageDecision(True, 0.0, error="Gemini API quota exhausted") for _ in range(end - start)]
+            return [PageDecision(True, 0.0, error="API quota exhausted") for _ in range(end - start)]
         context = None
         if start > 0 and pages[start - 1].source_file == pages[start].source_file:
             context = upright(start - 1)
         try:
             return classify_batch([upright(i) for i in range(start, end)], context)
-        except GeminiError as exc:
-            if isinstance(exc, GeminiQuotaError):
+        except LLMError as exc:
+            if isinstance(exc, LLMQuotaError):
                 quota_hit.set()
             logger.warning("Page classification failed for pages %d-%d: %s", start + 1, end, exc)
             return [PageDecision(True, 0.0, error=str(exc)) for _ in range(end - start)]

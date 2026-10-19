@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 # Flag reasons that trigger a re-read. Not "date_source_rejected" (the source rule is not re-litigated),
 # not "commitment_is_id" or "extraction_failed".
 REREAD_REASONS = frozenset({"missing", "unreadable", "low_confidence", "invalid_id", "invalid_format",
-                            "invalid_date", "date_out_of_range"})
+                            "invalid_date", "date_out_of_range", "central_prefix", "date_before_collection",
+                            "date_long_after_collection"})
 
 CROP_PAD_X = 0.25           # horizontal padding, fraction of the box width (labels sit beside values)
 CROP_PAD_Y = 0.5            # vertical padding, fraction of the box height
@@ -225,8 +226,8 @@ def _unit(value) -> float:
 
 def reread_fields(images: list, extraction, keys: list) -> FieldRecheck:
     """Re-read the given fields from high-resolution crops in one request. Never raises on API
-    problems except GeminiQuotaError (the caller stops the run)."""
-    from src.extraction_engine import GeminiError, GeminiQuotaError, generate_json, image_part
+    problems except LLMQuotaError (the caller stops the run)."""
+    from src.extraction_engine import LLMError, LLMQuotaError, generate_json, image_part
 
     if not keys:
         return FieldRecheck()
@@ -240,9 +241,9 @@ def reread_fields(images: list, extraction, keys: list) -> FieldRecheck:
         contents += [f"Crop {i} - field: {key}", image_part(crop, CROP_MAX_SIDE)]
     try:
         data = generate_json(contents, REREAD_SCHEMA, media_resolution="high", purpose="reread_fields")
-    except GeminiQuotaError:
+    except LLMQuotaError:
         raise
-    except GeminiError as exc:
+    except LLMError as exc:
         logger.warning("Targeted re-read failed: %s", exc)
         recheck.error = str(exc)
         return recheck

@@ -1,0 +1,249 @@
+"""Provider interface: Claude request shape, schema conversion, image limits, error mapping.
+
+The Anthropic client is faked - these tests never touch the API.
+"""
+import base64
+import json
+from io import BytesIO
+from types import SimpleNamespace
+
+import anthropic
+import httpx2
+import pytest
+from PIL import Image
+
+from src import config
+from src import extraction_engine as ee
+from src import llm_provider as lp
+from src.constants import CONFIDENCE_LABELS, FIELD_KEYS
+
+
+def _jpeg(w: int, h: int) -> lp.ImagePart:
+    buf = BytesIO()
+    Image.new("RGB", (w, h), "white").save(buf, "JPEG")
+    return lp.ImagePart(buf.getvalue())
+
+
+# ---- provider selection ----------------------------------------------------------------
+
+def test_default_provider_is_claude(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
+    assert lp.get_provider().name == "claude"
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    assert lp.get_provider().name == "gemini"
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    with pytest.raises(RuntimeError, match="LLM_PROVIDER"):
+        lp.get_provider()
+
+
+def test_claude_key_falls_back_to_anthropic_api_key(monkeypatch):
+    monkeypatch.setenv("CLAUDE_API_KEY", "")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    assert config.CLAUDE_API_KEY == "sk-ant-test"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    with pytest.raises(RuntimeError, match="CLAUDE_API_KEY"):
+        config.CLAUDE_API_KEY  # noqa: B018
+
+
+# ---- schema conversion ---------------------------------------------------------------------
+
+def test_gemini_schema_converts_to_strict_json_schema():
+    schema = ee.build_schema(["כללית", "מכבי"], labelled_confidence=True)
+    out = lp.to_json_schema(schema)
+    assert out["type"] == "object" and out["additionalProperties"] is False
+    assert out["required"] == list(out["properties"])          # every property required
+    sender = out["properties"]["sending_entity"]["properties"]["value"]
+    assert sender == {"anyOf": [{"type": "string", "enum": ["כללית", "מכבי"]}, {"type": "null"}]}
+    assert out["properties"]["id_number"]["properties"]["value"]["type"] == ["string", "null"]
+    central = out["properties"]["central_numbers"]["properties"]["value"]
+    assert central == {"type": "array", "items": {"type": "string"}}
+    conf = out["properties"]["id_number"]["properties"]["confidence"]
+    assert conf == {"type": "string", "enum": list(CONFIDENCE_LABELS)}
+    assert "source_note" in out["properties"]["id_number"]["required"]
+    assert "propertyOrdering" not in json.dumps(out) and "nullable" not in json.dumps(out)
+    # Structured outputs allow at most 16 union-typed parameters per request.
+    assert json.dumps(out).count('"null"') <= 16
+
+
+def test_gemini_schema_is_unchanged_without_labels():
+    schema = ee.build_schema(["כללית"])
+    assert schema["properties"]["id_number"]["properties"]["confidence"] == {"type": "NUMBER"}
+    assert "source_note" not in schema["properties"]["id_number"]["properties"]
+    assert "CONFIDENCE LABELS" not in ee.load_prompt(["כללית"])
+    assert "CONFIDENCE LABELS" in ee.load_prompt(["כללית"], labelled_confidence=True)
+
+
+def test_confidence_labels_map_onto_the_threshold():
+    data = {k: {"value": None, "confidence": "low", "source_note": ""} for k in FIELD_KEYS}
+    data["id_number"] = {"value": "123", "confidence": "high", "source_note": "label ת.ז., page 1"}
+    data["last_name"] = {"value": "x", "confidence": "Medium"}
+    res = ee.parse_extraction(data)
+    assert res.fields["id_number"].confidence >= config.CONFIDENCE_THRESHOLD
+    assert res.fields["last_name"].confidence < config.CONFIDENCE_THRESHOLD
+    assert res.fields["first_name"].confidence < config.CONFIDENCE_THRESHOLD
+    assert res.fields["id_number"].note == "label ת.ז., page 1"
+    assert res.fields["first_name"].note is None
+
+
+# ---- image limits ----------------------------------------------------------------------------
+
+def test_small_images_are_sent_unchanged():
+    part = _jpeg(1000, 800)
+    assert lp.fit_claude_image(part) == part
+
+
+def test_large_images_are_downscaled_within_limits():
+    out = lp.fit_claude_image(_jpeg(3500, 2480))
+    w, h = Image.open(BytesIO(out.data)).size
+    assert max(w, h) <= lp.CLAUDE_MAX_LONG_EDGE
+    assert lp.visual_tokens(w, h) <= lp.CLAUDE_MAX_VISUAL_TOKENS
+    assert abs(w / h - 3500 / 2480) < 0.01                       # aspect ratio kept
+    assert out.media_type == "image/jpeg"
+
+
+def test_many_images_use_the_stricter_side_limit():
+    blocks = lp.ClaudeProvider().content_blocks(["intro", ""] + [_jpeg(2400, 1000)] * 21)
+    assert blocks[0] == {"type": "text", "text": "intro"}            # empty text is dropped
+    img = Image.open(BytesIO(base64.b64decode(blocks[1]["source"]["data"])))
+    assert max(img.size) <= lp.CLAUDE_MANY_IMAGES_MAX_SIDE
+
+
+# ---- Claude call with a fake client -------------------------------------------------------------
+
+class _FakeMessages:
+    def __init__(self, reply=None, error=None):
+        self.reply, self.error, self.kwargs = reply, error, None
+
+    def create(self, **kwargs):
+        self.kwargs = kwargs
+        if self.error:
+            raise self.error
+        return self.reply
+
+
+def _reply(text='{"ok": true}', stop_reason="end_turn"):
+    usage = SimpleNamespace(input_tokens=100, output_tokens=40, cache_read_input_tokens=900,
+                            cache_creation_input_tokens=0)
+    return SimpleNamespace(content=[SimpleNamespace(type="thinking", thinking=""), SimpleNamespace(type="text", text=text)],
+                           usage=usage, model="claude-sonnet-5-5", stop_reason=stop_reason)
+
+
+@pytest.fixture
+def claude(monkeypatch, tmp_path):
+    provider = lp.get_provider_named("claude")
+    messages = _FakeMessages(_reply())
+    monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
+    monkeypatch.setattr(config, "DEV_CACHE", False)
+    monkeypatch.setattr(config, "DEV_CACHE_DIR", tmp_path / "dev_cache")
+    monkeypatch.setattr(provider, "client", lambda: SimpleNamespace(beta=SimpleNamespace(messages=messages)))
+    return messages
+
+
+def test_claude_request_shape(claude):
+    ee.reset_usage()
+    data = ee.generate_json(["read this", _jpeg(50, 50)], {"type": "OBJECT", "properties": {"ok": {"type": "BOOLEAN"}}},
+                            system_instruction="rules", purpose="extract")
+    assert data == {"ok": True}
+    kw = claude.kwargs
+    assert kw["model"] == config.CLAUDE_MODEL and "temperature" not in kw
+    assert kw["output_config"]["effort"] == config.CLAUDE_EFFORT
+    assert kw["output_config"]["format"]["schema"]["properties"]["ok"] == {"type": "boolean"}
+    assert kw["system"][0]["text"] == "rules" and kw["system"][0]["cache_control"] == {"type": "ephemeral"}
+    content = kw["messages"][0]["content"]
+    assert content[0] == {"type": "text", "text": "read this"}
+    assert content[1]["type"] == "image" and content[1]["source"]["media_type"] == "image/jpeg"
+    assert ee.get_usage() == {"requests": 1, "prompt_tokens": 1000, "output_tokens": 40}
+    usage = ee.get_usage_by_purpose()["extract"]
+    assert usage["cache_read_tokens"] == 900 and usage["models"] == {"claude-sonnet-5-5": 1}
+    assert lp.cost_usd("claude-sonnet-5-5", usage) == pytest.approx((100 * 2 + 40 * 10 + 900 * 0.2) / 1e6)
+
+
+def test_thinking_is_requested_for_extraction_and_reread_only(claude):
+    for purpose in ("extract", "reread_fields"):
+        ee.generate_json(["x", purpose], {"type": "OBJECT"}, purpose=purpose)
+        assert claude.kwargs["thinking"] == {"type": "adaptive"}
+        assert claude.kwargs["output_config"]["effort"] == config.CLAUDE_EFFORT
+        assert "temperature" not in claude.kwargs
+    for purpose in ("orientation", "split", "verify_names"):
+        ee.generate_json(["x", purpose], {"type": "OBJECT"}, purpose=purpose)
+        assert "thinking" not in claude.kwargs
+
+
+def test_default_claude_model_is_opus(monkeypatch):
+    import importlib
+
+    monkeypatch.delenv("CLAUDE_MODEL", raising=False)
+    fresh = importlib.reload(config)
+    try:
+        assert fresh.CLAUDE_MODEL == "claude-opus-5-5"
+    finally:
+        importlib.reload(config)
+
+
+def test_layout_questions_run_at_low_effort(claude):
+    ee.generate_json(["x"], {"type": "OBJECT"}, purpose="orientation")
+    assert claude.kwargs["output_config"]["effort"] == "low"
+    ee.generate_json(["x"], {"type": "OBJECT"}, purpose="extract", thinking_level="medium")
+    assert claude.kwargs["output_config"]["effort"] == "medium"
+
+
+def _status_error(cls, status):
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx2.Response(status, request=request)
+    return cls("error", response=response, body=None)
+
+
+@pytest.mark.parametrize("error, expected", [
+    (lambda: _status_error(anthropic.RateLimitError, 429), lp.LLMQuotaError),
+    (lambda: _status_error(anthropic.AuthenticationError, 401), lp.LLMQuotaError),
+    (lambda: _status_error(anthropic.NotFoundError, 404), lp.LLMQuotaError),
+    (lambda: _status_error(anthropic.InternalServerError, 529), lp.LLMError),
+    (lambda: anthropic.APITimeoutError(request=httpx2.Request("POST", "https://api.anthropic.com")), lp.LLMError),
+])
+def test_api_errors_are_mapped(claude, error, expected):
+    claude.error = error()
+    with pytest.raises(expected) as info:
+        ee.generate_json(["x"], {"type": "OBJECT"})
+    assert "Claude" in str(info.value)
+    if expected is lp.LLMError:
+        assert not isinstance(info.value, lp.LLMQuotaError)
+
+
+def test_low_credit_stops_the_run(claude):
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    claude.error = anthropic.BadRequestError(
+        "Your credit balance is too low to access the Anthropic API.",
+        response=httpx2.Response(400, request=request), body=None)
+    with pytest.raises(lp.LLMQuotaError, match="credit"):
+        ee.generate_json(["x"], {"type": "OBJECT"})
+
+
+def test_refusal_and_truncation_are_errors(claude):
+    claude.reply = _reply(stop_reason="refusal")
+    with pytest.raises(lp.LLMError, match="declined"):
+        ee.generate_json(["x"], {"type": "OBJECT"})
+    claude.reply = _reply(text='{"ok": tr', stop_reason="max_tokens")
+    with pytest.raises(lp.LLMError, match="max_tokens"):
+        ee.generate_json(["x"], {"type": "OBJECT"})
+
+
+def test_enum_values_with_quotes_are_aliased_and_restored(claude):
+    schema = {"type": "OBJECT", "properties": {"s": {"type": "STRING", "enum": ['רמב"ם', "כללית"], "nullable": True}}}
+    sent, aliases = lp.alias_quoted_enums(lp.to_json_schema(schema))
+    assert '"' not in "".join(sent["properties"]["s"]["anyOf"][0]["enum"])
+    alias = next(iter(aliases))
+    # The model answers with the alias (plain or \u-escaped); the caller gets the original name back.
+    claude.reply = _reply(text='{"s": "' + alias + '"}')
+    assert ee.generate_json(["x"], schema) == {"s": 'רמב"ם'}
+    claude.reply = _reply(text='{"s": ' + json.dumps(alias) + "}")
+    assert ee.generate_json(["y"], schema) == {"s": 'רמב"ם'}
+    assert claude.kwargs["output_config"]["format"]["schema"] == sent
+
+
+def test_claude_and_gemini_use_separate_cache_keys(claude, monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+    request = lp.ModelRequest(schema={})
+    claude_key = ee._cache_key(["x"], {}, None, "high", model_id=lp.get_provider_named("claude").cache_id(request))
+    gemini_key = ee._cache_key(["x"], {}, None, "high", model_id=lp.get_provider_named("gemini").cache_id(request))
+    assert claude_key != gemini_key
+    assert gemini_key == ee._cache_key(["x"], {}, None, "high")   # existing Gemini cache keys unchanged

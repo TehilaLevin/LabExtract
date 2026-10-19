@@ -12,10 +12,71 @@ batch upload → split into forms → identify form type → extract fields → 
 streamlit run app.py            # opens http://localhost:8501
 ```
 
-`.env` must hold `GEMINI_API_KEY` and `GEMINI_MODEL` (see `.env.example`); PDFs need Poppler.
+`.env` must hold the key of the selected model provider (see `.env.example`); PDFs need Poppler.
+
+## Model provider (Claude by default, Gemini as rollback)
+
+Every model call (orientation, splitting, extraction, name check, field re-read) goes through one interface,
+`src/llm_provider.py`, selected by `LLM_PROVIDER`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LLM_PROVIDER` | `claude` | `claude` or `gemini` – rolling back to Gemini is this one variable |
+| `CLAUDE_API_KEY` (or `ANTHROPIC_API_KEY`) | – | Anthropic API key |
+| `CLAUDE_MODEL` | `claude-opus-5-5` | used for every call type; `claude-sonnet-5-5` is about 3x cheaper but reads handwriting worse |
+| `CLAUDE_EFFORT` | `high` | `low` / `medium` / `high` / `xhigh` / `max`; orientation and splitting always run at `low` |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | – | only for `LLM_PROVIDER=gemini` |
+| `HIGHLIGHT_CROPS` | `true` | zoomed crops of highlighted regions sent with the page (see below) |
+| `HIGHLIGHT_CROPS_PROVIDERS` | `claude` | providers that get the crops; `claude,gemini` adds them to Gemini requests |
+| `HIGHLIGHT_DEBUG` | `false` | dev only: save those crops to `data/temp/highlight_debug/` |
+| `STRICT_VALIDATION` | `true` | the extra checks below; `false` restores the earlier ones (for comparisons) |
+| `CENTRAL_NUMBER_PREFIXES` | `93,94` | expected central-number prefixes (a mismatch is a warning flag) |
+| `RECEIVED_DATE_MAX_AGE_DAYS` | `90` | older received dates are flagged |
+| `RECEIVED_AFTER_COLLECTION_MAX_DAYS` | `14` | the received date must be 0..N days after the collection date |
+| `EVAL_MODE` | `false` | evaluation only: skip the age-from-today check (the sample forms are months old) |
+
+Extraction and the targeted re-read run with thinking (`thinking: {"type": "adaptive"}`, the documented mode on
+current models) at `CLAUDE_EFFORT`; the logs show how many output tokens went to thinking.
+
+Claude specifics: images are sent as base64 JPEG and downscaled to the API limits (2576 px long edge,
+4784 visual tokens, 10 MB; 2000 px when a request holds more than 20 images). Answers are forced into the
+JSON schema with structured outputs (`output_config.format`); the Gemini-style schemas are converted
+automatically. Current Claude models reject `temperature`, so determinism comes from the schema and the
+effort level. For extraction, Claude reports each field's confidence as `high` / `medium` / `low` plus a
+short `source_note` (where on the form it read the value - never the value): only `high` passes the 0.8
+threshold, so `medium` and `low` are always flagged. The note is shown on the review card. The extraction
+prompt is cached by the API (cache reads cost 10% of input). The SDK retries 429, 529, 5xx and connection
+errors with exponential backoff (`CLAUDE_MAX_RETRIES`), with a 180 s timeout per attempt; a rate limit,
+rejected key or unknown model stops the run with a clear message. Logs hold only token counts and timing
+per call. Refused requests fall back to another Claude model server-side (`fallbacks: "default"`).
+Each field also gets `raw_text` - the text exactly as written, even partial (`?` = an illegible character) - on
+the single-value fields (names, ID, date, sender). It is shown on the review card as a reading aid and is never
+used as a value. (On the list fields it made the compiled schema too large for the API.)
+
+### Highlight crops (`src/highlight_crops.py`, Claude only)
+
+Highlighter marks (yellow, also the green / cyan markers in the samples) are found with an HSV mask, morphology
+and a minimum area. Each region is cut from the 300 DPI page with padding, enlarged 2x and sent in the same
+request as the full page, labelled "Crop k of n (position on the page)". When the region holds blue pen ink, a
+cleaned "blue ink only" version is added (blue tint mask; highlighter, black print and barcodes removed, small
+specks dropped). At most 10 regions per form, those with handwriting first. A page without highlighting is
+extracted exactly as before. In the samples the highlighting marks the very fields to extract; whether real lab
+forms carry highlighting is unknown, so the gain measured on the samples may not carry over.
+
+### Validation after extraction (`STRICT_VALIDATION`)
+
+- Central number: exactly 6 digits; a prefix outside `CENTRAL_NUMBER_PREFIXES` is a warning flag.
+- Received date: a valid date, not in the future, at most `RECEIVED_DATE_MAX_AGE_DAYS` old (skipped with
+  `EVAL_MODE`), and 0..`RECEIVED_AFTER_COLLECTION_MAX_DAYS` days after the sample collection date when the
+  form states one (`collection_date`, Claude only; a time after the date is ignored, a date without a year is
+  never used; never exported).
+- ID: Israeli check digit (up to 9 digits after removing separators); the same patient (identical first + last
+  name) must carry the same ID on every form of the batch (`id_batch_mismatch`).
+- A field failing a check gets one targeted re-read from its high-resolution crop; if it still fails it stays
+  flagged (orange in the review screen and in the Excel export). Values are never changed silently.
 
 1. **Upload** – drag in PDFs / phone photos (many forms per file are fine) and press "חלץ". A progress bar
-   follows the split and then each form. Gemini is called only here.
+   follows the split and then each form. The model is called only here.
 2. **Summary** – one row per form: form type, number of fields to review, form warnings, status. Click a row.
 3. **Review** – the form image on one side; on the other, one card per field with the value, the image crop the
    value was read from, an edit box, and the reason for any flag (orange). Unverified handwritten names are never
@@ -46,10 +107,16 @@ typing does not rerun the script; saved values are kept in `src/review_session.p
   resolution, and all readings of every place the name appears must agree. Otherwise the name field is left empty and
   flagged, and the best reading is shown only as an orange "suggestion – unverified" (never an approved value).
 
+- **Claude vs Gemini on the 5 labelled sample forms (Oct 2026):** Gemini 3.6 Flash 29/35 fields, Claude Opus 5.5
+  26/35, Claude Sonnet 5.5 21/35, all three with 0 silent errors. Printed fields (sender, commitment, received date,
+  central numbers) are equal. The gap is handwritten names and IDs: Claude declines to read Hebrew cursive far more
+  often (empty + flagged, never guessed). Sonnet 5.5 costs about $0.045 per form for the whole pipeline, Opus 5.5
+  about $0.14. Five forms are far too few to decide on: label more forms before choosing a provider.
+
 ## Development cache (`DEV_CACHE`) – development only
 
-To save API cost while developing, Gemini responses can be cached on disk, keyed by a hash of the
-model, prompt, schema and images. It is **off by default** and must **never be enabled in production**.
+To save API cost while developing, model responses can be cached on disk, keyed by a hash of the
+provider, model, prompt, schema and images (Claude and Gemini answers never mix). It is **off by default** and must **never be enabled in production**.
 
 - Enable for a development session only: `DEV_CACHE=true` in `.env` (or as an environment variable).
 - Cached responses are stored in `data/dev_cache/`. The folder is git-ignored.
@@ -58,7 +125,7 @@ model, prompt, schema and images. It is **off by default** and must **never be e
 **Before sharing, zipping or submitting the project, delete the cache:**
 
 ```bash
-.venv/Scripts/python -c "from src.extraction_engine import clear_dev_cache; print(clear_dev_cache(), 'files deleted')"
+.venv/Scripts/python -m src.clear_cache    # dev cache + highlight debug crops
 ```
 
 (or delete the `data/dev_cache/` folder). Also make sure `DEV_CACHE` is not set to `true` in `.env`.
@@ -98,9 +165,21 @@ DEV_CACHE=true .venv/Scripts/python evaluation/evaluate_accuracy.py --max-reques
 .venv/Scripts/python evaluation/compare_preprocessing.py FILE.pdf [--save data/temp/compare]
 ```
 
-The report splits every field into correct / correct but flagged / missing / wrong but flagged /
-**wrong and not flagged** (silent errors). Correctness comes only from the ground truth, never from
+The report splits every field into correct_unflagged / correct_flagged / wrong_flagged /
+**wrong_silent** (wrong and not flagged - the number that matters) / empty_flagged / empty_unflagged.
+A value on a field labelled UNREADABLE is a guess: wrong_flagged when flagged, wrong_silent only when not. Correctness comes only from the ground truth, never from
 validation. A comparison is refused when rows, labels or model differ, or when a run is incomplete.
+To compare models on purpose (e.g. Gemini → Claude), add `--compare-models`:
+
+```bash
+# Gemini baseline from the dev cache (free), then Claude live, compared:
+LLM_PROVIDER=gemini GEMINI_MODEL=gemini-3.6-flash .venv/Scripts/python evaluation/evaluate_accuracy.py \
+    --cache-only --save-summary data/output/gemini_summary.json
+DEV_CACHE=true .venv/Scripts/python evaluation/evaluate_accuracy.py --max-requests 80 \
+    --compare data/output/gemini_summary.json --compare-models
+```
+
+Live runs print tokens (incl. prompt-cache reads/writes), time and cost per stage and per form.
 
 No values are printed by default (`--show-values` prints non-personal fields only). The ground truth has only
 5 rows, so the results are preliminary.

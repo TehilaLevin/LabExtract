@@ -1,7 +1,7 @@
 """Pure-Python validators and normalizers. Never guess: return None / False when unsure."""
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple, Optional, Union
@@ -194,11 +194,13 @@ def _one_year_before(today: date) -> date:
         return today.replace(year=today.year - 1, day=28)
 
 
-def check_received_date(date_str: str, today: Optional[date] = None) -> DateCheck:
+def check_received_date(date_str: str, today: Optional[date] = None,
+                        max_age_days: Optional[int] = None, check_age: bool = True) -> DateCheck:
     """Normalize a received date and decide whether it needs review.
 
-    Flagged when: unreadable / partial text, not a valid date, in the future, or more
-    than one year in the past. A flagged-but-valid date keeps its value for display.
+    Flagged when: unreadable / partial text, not a valid date, in the future, or older than
+    max_age_days (default: one year; check_age=False skips the age check). A flagged-but-valid date keeps
+    its value for display.
     """
     today = today or date.today()
     if _parse_parts(date_str) is None:
@@ -210,7 +212,8 @@ def check_received_date(date_str: str, today: Optional[date] = None) -> DateChec
     parsed = date(y, mo, d)
     if parsed > today:
         return DateCheck(value, True, "future")
-    if parsed < _one_year_before(today):
+    oldest = _one_year_before(today) if max_age_days is None else today - timedelta(days=max_age_days)
+    if check_age and parsed < oldest:
         return DateCheck(value, True, "too_old")
     return DateCheck(value, False, None)
 
@@ -242,3 +245,33 @@ def normalize_number_list(value: Union[str, list, tuple, None]) -> list:
 def format_number_list(value: Union[str, list, tuple, None], separator: str = ", ") -> str:
     """Display a list field as comma-separated text (empty string when no values)."""
     return separator.join(normalize_number_list(value))
+
+
+def date_before(earlier_str: str, later_str: str) -> bool:
+    """True when both are valid dates and later_str is strictly before earlier_str (e.g. a sample received
+    before it was collected). Unreadable dates never trigger it."""
+    a, b = normalize_date(earlier_str), normalize_date(later_str)
+    if a is None or b is None:
+        return False
+    to_date = lambda v: date(int(v[6:]), int(v[3:5]), int(v[:2]))  # noqa: E731
+    return to_date(b) < to_date(a)
+
+
+_DATE_TOKEN_RE = re.compile(r"(?<!\d)\d{1,4}[./\-]\d{1,2}[./\-]\d{2,4}(?!\d)")
+
+
+def _date_part(text) -> Optional[str]:
+    """The first complete date inside text ("17/06/2026 10:18" -> "17/06/2026"), else None."""
+    if not isinstance(text, str):
+        return None
+    m = _DATE_TOKEN_RE.search(text)
+    return m.group(0) if m else None
+
+
+def days_between(earlier_str: str, later_str: str) -> Optional[int]:
+    """(later - earlier) in days for two valid dates (a time after the date is ignored), else None."""
+    a, b = normalize_date(_date_part(earlier_str)), normalize_date(_date_part(later_str))
+    if a is None or b is None:
+        return None
+    to_date = lambda v: date(int(v[6:]), int(v[3:5]), int(v[:2]))  # noqa: E731
+    return (to_date(b) - to_date(a)).days

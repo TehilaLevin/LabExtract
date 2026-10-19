@@ -1,4 +1,4 @@
-"""Gemini client, prompt, JSON schema, per-field confidence.
+"""Model calls (via src.llm_provider), prompt, JSON schema, per-field confidence.
 
 Privacy: only form images (and the fixed prompt) are sent to the API. Nothing from
 the model's answer is logged - only field names, confidences and error types.
@@ -8,19 +8,15 @@ import json
 import logging
 import os
 import threading
-import time
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Optional, Union
 
-import httpx
-from google import genai
-from google.genai import errors as genai_errors
-from google.genai import types
 from PIL import Image
 
 from src import config
 from src.constants import (
+    CONFIDENCE_LABELS,
     FIELD_KEYS,
     FIELD_STATUSES,
     FORM_TYPES,
@@ -35,65 +31,39 @@ from src.constants import (
     RECEIVED_DATE_SOURCES,
 )
 from src.image_preprocessor import resize_for_model
+from src.llm_provider import (
+    THINKING_LEVELS,
+    ImagePart,
+    LLMError,
+    LLMQuotaError,
+    ModelReply,
+    ModelRequest,
+    get_provider,
+)
 from src.validators import list_approved_senders
 
 logger = logging.getLogger(__name__)
 
 NAME_KEYS = ("first_name", "last_name")
 
-
-class GeminiError(RuntimeError):
-    """A Gemini call failed. The message never contains form content."""
-
-
-class GeminiQuotaError(GeminiError):
-    """429 RESOURCE_EXHAUSTED after retries: stop sending requests for this run."""
+# Provider-neutral errors. The Gemini names stay as aliases for the evaluation scripts.
+GeminiError = LLMError
+GeminiQuotaError = LLMQuotaError
 
 
-# ------------------------------------------------------------------ Gemini client
-
-_client: Optional[genai.Client] = None
-_client_lock = threading.Lock()
-
-
-def get_client() -> genai.Client:
-    # One shared client, created under a lock: concurrent first calls must not create
-    # several clients (a garbage-collected client closes its HTTP pool mid-request).
-    global _client
-    with _client_lock:
-        if _client is None:
-            _client = _new_client()
-        return _client
-
-
-def _new_client() -> genai.Client:
-    return genai.Client(
-        api_key=config.GEMINI_API_KEY,
-        http_options=types.HttpOptions(
-            timeout=config.REQUEST_TIMEOUT_S * 1000,  # milliseconds
-            retry_options=types.HttpRetryOptions(
-                attempts=config.MAX_ATTEMPTS,
-                initial_delay=2.0,
-                max_delay=30.0,
-                http_status_codes=[408, 429, 500, 502, 503, 504],
-            ),
-        ),
-    )
-
-
-def image_part(image: Image.Image, max_side: int) -> types.Part:
-    """Encode an image as an inline JPEG part, downscaled to max_side."""
+def image_part(image: Image.Image, max_side: int) -> ImagePart:
+    """Encode an image as JPEG, downscaled to max_side."""
     img = resize_for_model(image.convert("RGB"), max_side)
     buf = BytesIO()
     img.save(buf, "JPEG", quality=90)
-    return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
+    return ImagePart(buf.getvalue(), "image/jpeg")
 
 
 def _parse_json(text: Optional[str]) -> dict:
     if not text:
         raise ValueError("empty response")
     s = text.strip()
-    if s.startswith("```"):  # tolerate fenced output despite response_mime_type
+    if s.startswith("```"):  # tolerate fenced output despite structured output
         s = s.strip("`")
         s = s[s.find("{"):]
     data = json.loads(s)
@@ -104,27 +74,30 @@ def _parse_json(text: Optional[str]) -> dict:
 
 # ------------------------------------------------------------------ token usage
 
-_MEDIA_RESOLUTIONS = {
-    "low": types.MediaResolution.MEDIA_RESOLUTION_LOW,
-    "medium": types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
-    "high": types.MediaResolution.MEDIA_RESOLUTION_HIGH,
-}
-
-TRANSPORT_RETRY_DELAY_S = 2.0
+_MEDIA_RESOLUTIONS = ("low", "medium", "high")
 
 _usage_lock = threading.Lock()
-_usage: dict = {}  # purpose -> {"requests", "prompt_tokens", "output_tokens"}
+_usage: dict = {}  # purpose -> {"requests", "prompt_tokens", "output_tokens", "cache_*_tokens", "models"}
 
 
-def _record_usage(response, purpose: str) -> None:
-    meta = getattr(response, "usage_metadata", None)
+def _record_usage(reply, purpose: str) -> None:
+    """prompt_tokens counts all input tokens, cached ones included (see llm_provider.cost_usd)."""
+    cache_read = getattr(reply, "cache_read_tokens", 0) or 0
+    cache_write = getattr(reply, "cache_write_tokens", 0) or 0
     with _usage_lock:
-        u = _usage.setdefault(purpose, {"requests": 0, "prompt_tokens": 0, "output_tokens": 0})
+        u = _usage.setdefault(purpose, {"requests": 0, "prompt_tokens": 0, "output_tokens": 0,
+                                        "cache_read_tokens": 0, "cache_write_tokens": 0, "thinking_tokens": 0,
+                                        "seconds": 0.0,
+                                        "models": {}})
         u["requests"] += 1
-        if meta is not None:
-            u["prompt_tokens"] += meta.prompt_token_count or 0
-            u["output_tokens"] += (meta.candidates_token_count or 0) + (
-                getattr(meta, "thoughts_token_count", 0) or 0)
+        u["prompt_tokens"] += (getattr(reply, "input_tokens", 0) or 0) + cache_read + cache_write
+        u["output_tokens"] += getattr(reply, "output_tokens", 0) or 0
+        u["cache_read_tokens"] += cache_read
+        u["cache_write_tokens"] += cache_write
+        u["thinking_tokens"] += getattr(reply, "thinking_tokens", 0) or 0
+        u["seconds"] += getattr(reply, "seconds", 0.0) or 0.0
+        model = getattr(reply, "model", "") or "unknown"
+        u["models"][model] = u["models"].get(model, 0) + 1
 
 
 def get_usage(purpose: Optional[str] = None) -> dict:
@@ -140,7 +113,7 @@ def get_usage(purpose: Optional[str] = None) -> dict:
 
 def get_usage_by_purpose() -> dict:
     with _usage_lock:
-        return {k: dict(v) for k, v in _usage.items()}
+        return {k: {**v, "models": dict(v["models"])} for k, v in _usage.items()}
 
 
 def reset_usage() -> None:
@@ -154,12 +127,14 @@ _cache_warned = threading.Event()
 
 
 def _cache_key(contents: list, schema: dict, system_instruction: Optional[str],
-               media_resolution: str, thinking_level: Optional[str] = None) -> str:
-    """SHA-256 of everything that determines the answer: model, schema, prompt, images, thinking level.
-    The thinking level is hashed only when set, so keys of requests without it never change."""
+               media_resolution: str, thinking_level: Optional[str] = None,
+               model_id: Optional[str] = None) -> str:
+    """SHA-256 of everything that determines the answer: provider/model, schema, prompt, images, thinking
+    level. The thinking level is hashed only when set, so keys of requests without it never change.
+    model_id defaults to GEMINI_MODEL, which keeps the keys of the existing Gemini cache."""
     h = hashlib.sha256()
-    pieces = [config.GEMINI_MODEL, json.dumps(schema, sort_keys=True, ensure_ascii=False),
-              system_instruction or "", media_resolution]
+    pieces = [model_id if model_id is not None else config.GEMINI_MODEL,
+              json.dumps(schema, sort_keys=True, ensure_ascii=False), system_instruction or "", media_resolution]
     if thinking_level:
         pieces.append(f"thinking_level={thinking_level}")
     for piece in pieces:
@@ -168,8 +143,8 @@ def _cache_key(contents: list, schema: dict, system_instruction: Optional[str],
     for item in contents:
         if isinstance(item, str):
             h.update(b"T" + item.encode("utf-8"))
-        elif getattr(item, "inline_data", None) is not None:
-            h.update(b"I" + hashlib.sha256(item.inline_data.data).digest())
+        elif isinstance(item, ImagePart):
+            h.update(b"I" + hashlib.sha256(item.data).digest())
         else:
             h.update(b"?" + repr(item).encode("utf-8"))
         h.update(b"\x00")
@@ -179,7 +154,7 @@ def _cache_key(contents: list, schema: dict, system_instruction: Optional[str],
 def _cache_get(key: str) -> Optional[dict]:
     if not _cache_warned.is_set():
         _cache_warned.set()
-        logger.warning("DEV_CACHE is enabled: Gemini responses (may contain personal data) are "
+        logger.warning("DEV_CACHE is enabled: model responses (may contain personal data) are "
                        "stored in %s. Development only - never enable in production.",
                        config.DEV_CACHE_DIR.name)
     path = config.DEV_CACHE_DIR / f"{key}.json"
@@ -207,73 +182,50 @@ def clear_dev_cache() -> int:
     return len(files)
 
 
-def _generate_with_transport_retry(contents: list, cfg: types.GenerateContentConfig):
-    """One generate_content call. HttpRetryOptions only retries HTTP status codes, so
-    dropped connections / transport timeouts (e.g. RemoteProtocolError) are retried here."""
-    for attempt in range(1, config.MAX_ATTEMPTS + 1):
-        try:
-            return get_client().models.generate_content(
-                model=config.GEMINI_MODEL, contents=contents, config=cfg
-            )
-        except genai_errors.APIError as exc:
-            if exc.code == 429:
-                raise GeminiQuotaError(f"Gemini API quota exhausted (429 {exc.status})") from None
-            raise GeminiError(f"Gemini API error {exc.code}: {exc.status}") from None
-        except httpx.TransportError as exc:
-            if attempt == config.MAX_ATTEMPTS:
-                raise GeminiError(f"Gemini request failed: {type(exc).__name__}") from None
-            logger.warning("Transport error %s (attempt %d), retrying", type(exc).__name__, attempt)
-            time.sleep(TRANSPORT_RETRY_DELAY_S * attempt)
-        except Exception as exc:  # anything else: do not retry blindly
-            raise GeminiError(f"Gemini request failed: {type(exc).__name__}") from None
-
-
-THINKING_LEVELS = ("minimal", "low", "medium", "high")
+def _call_model(contents: list, request: ModelRequest) -> ModelReply:
+    """The single place where a request leaves the app (the evaluation scripts guard this call)."""
+    return get_provider().call(contents, request)
 
 
 def generate_json(contents: list, schema: dict, *, system_instruction: Optional[str] = None,
                   media_resolution: str = "high", purpose: str = "other",
                   thinking_level: Optional[str] = None) -> dict:
-    """Call Gemini with structured JSON output and return the parsed object.
+    """Call the configured model (LLM_PROVIDER) with structured JSON output; return the parsed object.
 
-    Transient HTTP errors are retried by the client (HttpRetryOptions); unparsable
-    JSON is retried INVALID_JSON_RETRIES more times. Raises GeminiError on failure.
-    media_resolution ("low" | "medium" | "high") sets how many tokens each image costs.
-    thinking_level (one of THINKING_LEVELS) overrides the model's default thinking; None keeps the default.
+    contents: prompt strings and ImageParts (see image_part). schema: Gemini schema dialect, converted
+    for Claude. Transient HTTP errors are retried by the provider's client; unparsable JSON is retried
+    INVALID_JSON_RETRIES more times. Raises LLMError (LLMQuotaError: stop the run) on failure.
+    media_resolution ("low" | "medium" | "high") sets how many tokens each image costs (Gemini only).
+    thinking_level (one of THINKING_LEVELS) overrides the default thinking (Claude: mapped to effort).
     With DEV_CACHE on (development only), identical requests are answered from disk.
     """
     if media_resolution not in _MEDIA_RESOLUTIONS:
-        raise ValueError(f"media_resolution must be one of {sorted(_MEDIA_RESOLUTIONS)}")
+        raise ValueError(f"media_resolution must be one of {list(_MEDIA_RESOLUTIONS)}")
     if thinking_level is not None and thinking_level not in THINKING_LEVELS:
         raise ValueError(f"thinking_level must be one of {THINKING_LEVELS}")
+    request = ModelRequest(schema=schema, system_instruction=system_instruction,
+                           media_resolution=media_resolution, thinking_level=thinking_level, purpose=purpose)
     cache_key = None
     if config.DEV_CACHE:
-        cache_key = _cache_key(contents, schema, system_instruction, media_resolution, thinking_level)
+        cache_key = _cache_key(contents, schema, system_instruction, media_resolution, thinking_level,
+                               model_id=get_provider().cache_id(request))
         cached = _cache_get(cache_key)
         if cached is not None:
             return cached
-    cfg = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=schema,
-        system_instruction=system_instruction,
-        media_resolution=_MEDIA_RESOLUTIONS[media_resolution],
-        thinking_config=(types.ThinkingConfig(thinking_level=types.ThinkingLevel(thinking_level.upper()))
-                         if thinking_level else None),
-    )
     last_error = "unknown"
     for attempt in range(1 + config.INVALID_JSON_RETRIES):
-        response = _generate_with_transport_retry(contents, cfg)
-        _record_usage(response, purpose)
+        reply = _call_model(contents, request)
+        _record_usage(reply, purpose)
         try:
-            data = _parse_json(response.text)
+            data = _parse_json(reply.text)
         except (ValueError, json.JSONDecodeError) as exc:
             last_error = type(exc).__name__
-            logger.warning("Invalid JSON from Gemini (attempt %d): %s", attempt + 1, last_error)
+            logger.warning("Invalid JSON from the model (attempt %d): %s", attempt + 1, last_error)
             continue
         if cache_key:
             _cache_put(cache_key, data)
         return data
-    raise GeminiError(f"Gemini returned invalid JSON ({last_error})")
+    raise LLMError(f"Model returned invalid JSON ({last_error})")
 
 
 # ------------------------------------------------------------------ extraction
@@ -285,6 +237,9 @@ class FieldResult:
     source: Optional[str] = None    # received_date only: one of RECEIVED_DATE_SOURCES
     script: Optional[str] = None    # first_name / last_name only: one of NAME_SCRIPTS
     status: Optional[str] = None    # one of FIELD_STATUSES; None = not reported
+    note: Optional[str] = None      # Claude only: where on the form the value was read (never the value)
+    raw_text: Optional[str] = None  # Claude only: the text exactly as written, even partial ('?' = illegible
+                                    # character). Shown to the reviewer only - never a value, never logged.
 
 
 @dataclass
@@ -296,6 +251,9 @@ class ExtractionResult:
     name_order_basis: str = "unclear"  # one of NAME_ORDER_BASES
     name_locations: list = field(default_factory=list)  # [{"page", "box", "kind"}], box = 0-1000
     field_locations: list = field(default_factory=list)  # [{"field", "page", "box"}], LOCATED_FIELDS only
+    # Claude only: the sample collection date as written (validation of received_date only, never exported).
+    collection_date: Optional[str] = None
+    highlight_crops: int = 0        # number of yellow-highlight crops sent with the page(s)
 
 
 def _value_schema(key: str, sender_names: list) -> dict:
@@ -306,8 +264,14 @@ def _value_schema(key: str, sender_names: list) -> dict:
     return {"type": "STRING", "nullable": True}
 
 
-def build_schema(sender_names: list) -> dict:
-    """Response schema: form_type plus {value, confidence} per field."""
+def build_schema(sender_names: list, labelled_confidence: bool = False) -> dict:
+    """Response schema: form_type plus {value, confidence} per field.
+
+    labelled_confidence (Claude): confidence is "high" | "medium" | "low" and every field also gets a
+    short source_note. The Gemini schema (default) is unchanged.
+    """
+    confidence_schema = ({"type": "STRING", "enum": list(CONFIDENCE_LABELS)} if labelled_confidence
+                         else {"type": "NUMBER"})
     props = {
         "form_type": {
             "type": "OBJECT",
@@ -319,9 +283,17 @@ def build_schema(sender_names: list) -> dict:
         }
     }
     for key in FIELD_KEYS:
-        field_props = {"value": _value_schema(key, sender_names), "confidence": {"type": "NUMBER"},
+        field_props = {"value": _value_schema(key, sender_names), "confidence": dict(confidence_schema),
                        "status": {"type": "STRING", "enum": list(FIELD_STATUSES)}}
         required = ["value", "confidence", "status"]
+        if labelled_confidence:
+            # raw_text: plain string ("" = none) and single-value fields only - with nullable unions or on the
+            # list fields too, the compiled grammar was too large for the API (400).
+            if key not in LIST_FIELDS:
+                field_props["raw_text"] = {"type": "STRING"}
+                required.append("raw_text")
+            field_props["source_note"] = {"type": "STRING"}
+            required.append("source_note")
         if key == "received_date":
             field_props["received_date_source"] = {"type": "STRING", "enum": list(RECEIVED_DATE_SOURCES)}
             required.append("received_date_source")
@@ -362,6 +334,12 @@ def build_schema(sender_names: list) -> dict:
             "propertyOrdering": ["field", "page", "box_2d"],
         },
     }
+    if labelled_confidence:
+        props["collection_date"] = {
+            "type": "OBJECT",
+            "properties": {"value": {"type": "STRING"}, "confidence": dict(confidence_schema)},
+            "required": ["value", "confidence"],
+        }
     return {
         "type": "OBJECT",
         "properties": props,
@@ -370,15 +348,44 @@ def build_schema(sender_names: list) -> dict:
     }
 
 
-def load_prompt(sender_names: list) -> str:
+# Appended to the extraction prompt for Claude (labelled confidence). The rules above it stay word for
+# word; this only maps their numeric confidence bands onto the labels the Claude schema asks for.
+LABELLED_CONFIDENCE_RULES = """
+==========================================================================
+CONFIDENCE LABELS AND SOURCE NOTES (for this response format)
+==========================================================================
+For the seven fields (first_name ... commitment_numbers), confidence is a label instead of a number:
+- "high":   the 0.80-1.0 band above (clearly printed or clear handwriting, and sure it is the right field).
+- "medium": the 0.50-0.79 band above (readable but some doubt).
+- "low":    below 0.50 (could not read it or could not find it) -> value must be null / [].
+Wherever a rule above caps the confidence (e.g. "confidence <= 0.7" or "<= 0.6"), answer "medium" or lower;
+a cap of 0.4 or below means "low". form_type.confidence stays a number 0-1.
+If it is not legible, return null. Do not guess. Do not complete names to common names.
+(If any letter or digit of a value would be a guess, the value is null with "low".)
+raw_text (names, id_number, received_date, sending_entity): the text EXACTLY as written in that field, even if partial or unclear - write "?" for each
+character you cannot read (e.g. "11?233?4"). It is shown to a human reviewer only and is never used as the value,
+so it may be incomplete; value stays null when the text is not fully legible. raw_text is an empty string when
+nothing is written there at all.
+source_note (per field): a few words on WHERE you read the value (label, sticker, stamp, handwriting, page) or why
+it is empty, e.g. "GLC sticker, page 1 top left" or "stamp present, date smudged". Never write the value, a name or
+a number in source_note. Use an empty string when there is nothing to say.
+collection_date: the date the SAMPLE WAS TAKEN, only when the form states it ("תאריך לקיחה", "תאריך לקיחת הדגימה",
+"נלקח בתאריך"), copied as written; empty string otherwise. It is NOT the received date and is only used to check it.
+"""
+
+
+def load_prompt(sender_names: list, labelled_confidence: bool = False) -> str:
     template = config.PROMPT_PATH.read_text(encoding="utf-8")
     name_rules = "\n".join(f"- {where} => {order}" for where, order in NAME_ORDER_CONVENTIONS)
-    return (template
-            .replace("{{NAME_ORDER_RULES}}", name_rules)
-            .replace("{{APPROVED_SENDERS}}", "\n".join(f"- {n}" for n in sender_names)))
+    prompt = (template
+              .replace("{{NAME_ORDER_RULES}}", name_rules)
+              .replace("{{APPROVED_SENDERS}}", "\n".join(f"- {n}" for n in sender_names)))
+    return prompt + LABELLED_CONFIDENCE_RULES if labelled_confidence else prompt
 
 
 def _confidence(value) -> float:
+    if isinstance(value, str) and value.strip().lower() in CONFIDENCE_LABELS:
+        return CONFIDENCE_LABELS[value.strip().lower()]
     try:
         c = float(value)
     except (TypeError, ValueError):
@@ -415,8 +422,12 @@ def parse_extraction(data: dict) -> ExtractionResult:
         raw = data.get(key) if isinstance(data.get(key), dict) else {}
         value = _clean_list(raw.get("value")) if key in LIST_FIELDS else _clean_scalar(raw.get("value"))
         status = raw.get("status")
+        note = _clean_scalar(raw.get("source_note"))
+        raw_text = _clean_scalar(raw.get("raw_text"))
         result = FieldResult(value=value, confidence=_confidence(raw.get("confidence")),
-                             status=status if status in FIELD_STATUSES else None)
+                             status=status if status in FIELD_STATUSES else None,
+                             note=note[:160] if note else None,
+                             raw_text=raw_text[:120] if raw_text else None)
         if key == "received_date":
             source = raw.get("received_date_source")
             result.source = source if source in RECEIVED_DATE_SOURCES else "none"
@@ -425,10 +436,12 @@ def parse_extraction(data: dict) -> ExtractionResult:
             result.script = script if script in NAME_SCRIPTS else "unknown"
         fields[key] = result
     basis = data.get("name_order_basis")
+    collection = data.get("collection_date") if isinstance(data.get("collection_date"), dict) else {}
     return ExtractionResult(form_type, _confidence(ft.get("confidence")), fields,
                             name_order_basis=basis if basis in NAME_ORDER_BASES else "unclear",
                             name_locations=_parse_locations(data.get("name_locations")),
-                            field_locations=_parse_field_locations(data.get("field_locations")))
+                            field_locations=_parse_field_locations(data.get("field_locations")),
+                            collection_date=_clean_scalar(collection.get("value")))
 
 
 def _parse_box(item) -> Optional[tuple]:
@@ -483,28 +496,45 @@ def empty_result(error: str) -> ExtractionResult:
     return ExtractionResult("unknown", 0.0, fields, error=error)
 
 
-def extract_form(images: list, sender_names: Optional[list] = None) -> ExtractionResult:
-    """Extract all fields from one form's page images. Never raises on API problems."""
+def extract_form(images: list, sender_names: Optional[list] = None, crop_images: Optional[list] = None,
+                 form_label: str = "form") -> ExtractionResult:
+    """Extract all fields from one form's page images. Never raises on API problems.
+
+    crop_images: the same pages at full 300 DPI resolution (original pixels). With HIGHLIGHT_CROPS on and the
+    provider in HIGHLIGHT_CROPS_PROVIDERS (default: Claude only), zoomed crops of their highlighted regions are
+    added to the request; a page without highlighting adds nothing.
+    """
+    from src.highlight_crops import CROP_IMAGE_MAX_SIDE, crop_contents, highlight_crops, save_debug_crops
+
     sender_names = sender_names or list_approved_senders(config.SENDERS_PATH)
     contents: list = []
     for i, img in enumerate(images, start=1):
         if len(images) > 1:
             contents.append(f"Page {i} of {len(images)}:")
         contents.append(image_part(img, config.EXTRACTION_IMAGE_MAX_SIDE))
+    provider = get_provider()
+    crops = []
+    if crop_images and provider.name in config.HIGHLIGHT_CROPS_PROVIDERS and config.HIGHLIGHT_CROPS_ENABLED:
+        crops = highlight_crops(crop_images)
+        save_debug_crops(crops, form_label)
+        contents += crop_contents(crops, len(images), image_part, CROP_IMAGE_MAX_SIDE)
     contents.append("Extract the fields from this form now.")
+    labelled = provider.labelled_confidence
     try:
-        data = generate_json(contents, build_schema(sender_names),
-                             system_instruction=load_prompt(sender_names), purpose="extract")
-    except GeminiQuotaError:
+        data = generate_json(contents, build_schema(sender_names, labelled),
+                             system_instruction=load_prompt(sender_names, labelled), purpose="extract")
+    except LLMQuotaError:
         raise  # the caller stops the run; no point in sending more requests
-    except GeminiError as exc:
+    except LLMError as exc:
         logger.warning("Extraction failed: %s", exc)
         return empty_result(str(exc))
     result = parse_extraction(data)
+    result.highlight_crops = len(crops)
     logger.info(
-        "Extracted form_type=%s confidences=%s",
+        "Extracted form_type=%s confidences=%s highlight_crops=%d",
         result.form_type,
         {k: round(f.confidence, 2) for k, f in result.fields.items()},
+        len(crops),
     )
     return result
 
@@ -640,9 +670,9 @@ def verify_names(images: list, extraction: ExtractionResult) -> NameCheck:
         contents += [f"Crop {i}:", image_part(crop, NAME_CROP_MAX_SIDE)]
     try:
         data = generate_json(contents, NAME_CHECK_SCHEMA, media_resolution="high", purpose="verify_names")
-    except GeminiQuotaError:
+    except LLMQuotaError:
         raise
-    except GeminiError as exc:
+    except LLMError as exc:
         logger.warning("Name verification failed: %s", exc)
         return NameCheck(needed=True, error=str(exc))
     by_index = {c.get("crop_index"): c for c in data.get("crops") or [] if isinstance(c, dict)}

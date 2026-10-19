@@ -46,6 +46,7 @@ sys.path.insert(0, str(ROOT))
 
 from src import config  # noqa: E402
 from src import extraction_engine as ee  # noqa: E402
+from src.llm_provider import get_provider_named  # noqa: E402
 
 HW_DIR = config.DATA_DIR / "handwriting_test"
 LABELS_PATH = HW_DIR / "labels.csv"
@@ -259,7 +260,7 @@ def install_guard(max_requests: int, allowed_stages: tuple, fresh: bool = False)
     dev cache is bypassed for the allowed stages (a new draw from the model)."""
     stats = {"live": 0, "blocked": 0, "cap_reached": False}
     lock = threading.Lock()
-    original_generate, original_call = ee.generate_json, ee._generate_with_transport_retry
+    original_generate, original_call = ee.generate_json, ee._call_model
     original_get, original_put = ee._cache_get, ee._cache_put
 
     def is_experiment() -> bool:
@@ -281,7 +282,7 @@ def install_guard(max_requests: int, allowed_stages: tuple, fresh: bool = False)
         return original_call(contents, cfg)
 
     config.DEV_CACHE = True  # re-running a round answers from the cache (free) unless --fresh
-    ee.generate_json, ee._generate_with_transport_retry = generate_json, call
+    ee.generate_json, ee._call_model = generate_json, call
     if fresh:
         ee._cache_get = lambda key: None if is_experiment() else original_get(key)
         ee._cache_put = lambda key, data: None if is_experiment() else original_put(key, data)
@@ -368,7 +369,7 @@ def sample_crops(run_dir: Path) -> list:
 # ------------------------------------------------------------------ commands
 
 def cmd_models(args) -> None:
-    for m in ee.get_client().models.list():
+    for m in get_provider_named("gemini").client().models.list():
         if "generateContent" in (getattr(m, "supported_actions", None) or []):
             print(f"  {m.name.removeprefix('models/')}")
 
@@ -1013,6 +1014,8 @@ def main() -> None:
     p = sub.add_parser("labelled-report")
     p.add_argument("--round", required=True)
     args = parser.parse_args()
+    # The arms are Gemini models (flash / pro): this experiment always runs on the Gemini provider.
+    config.LLM_PROVIDER = "gemini"
     {"models": cmd_models, "locate": cmd_locate, "prepare": cmd_prepare, "run": cmd_run,
      "report": cmd_report, "labelled-prepare": cmd_labelled_prepare, "labelled-locate": cmd_labelled_locate,
      "labelled-run": cmd_labelled_run, "labelled-report": cmd_labelled_report}[args.command](args)

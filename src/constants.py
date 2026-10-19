@@ -85,6 +85,10 @@ FLAG_REASONS = {
     "reread_conflict": "קריאה חוזרת סותרת",
     "reread_replaced": "הוחלף בקריאה חוזרת – לבדיקה",
     "reread_single_reading": "נקרא רק בקריאה חוזרת – לבדיקה",
+    "central_prefix": "קידומת מספר מרכזי לא צפויה – לבדיקה",
+    "date_before_collection": "תאריך הקבלה מוקדם מתאריך הלקיחה",
+    "date_long_after_collection": "תאריך הקבלה רחוק מתאריך הלקיחה (מעל 14 יום)",
+    "id_batch_mismatch": "ת\"ז שונה מזו של אותו מטופל בטופס אחר",
 }
 
 # Form-level split warnings (form_splitter.SPLIT_FLAG_*), shown on the review screen.
@@ -102,6 +106,11 @@ REVIEW_STATUS_PENDING = "לא אושר"
 # Per-field reading status reported by the extractor: lets "not on the form" (missing)
 # be told apart from "on the form but not legible" (unreadable).
 FIELD_STATUSES = ("read", "unreadable", "not_present")
+
+# Claude reports field confidence as a label (LLM_PROVIDER=claude); mapped onto the numeric scale
+# the rest of the pipeline uses. Only "high" reaches CONFIDENCE_THRESHOLD (0.8): medium and low
+# are always flagged for review.
+CONFIDENCE_LABELS = {"high": 0.95, "medium": 0.65, "low": 0.3}
 
 # Fields that get a targeted, high-resolution second reading when flagged (names have
 # their own verification).

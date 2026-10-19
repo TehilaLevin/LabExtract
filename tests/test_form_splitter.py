@@ -212,7 +212,7 @@ def test_orientation_uses_small_low_resolution_thumbnails(monkeypatch):
 
     def fake_generate(contents, schema, **kwargs):
         seen["res"] = kwargs.get("media_resolution")
-        seen["sizes"] = [c.inline_data.data for c in contents if not isinstance(c, str)]
+        seen["sizes"] = [c.data for c in contents if not isinstance(c, str)]
         return {"upright": "A", "confidence": 0.99}
 
     monkeypatch.setattr(extraction_engine, "generate_json", fake_generate)

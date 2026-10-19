@@ -13,7 +13,7 @@ Streamlit limits and how they are handled:
   bordered card per field; a flagged card gets an orange frame through CSS on its key class
   ("st-key-<key>"). Read-only tables (summary, export preview) are coloured with a pandas Styler in
   st.dataframe, which does support per-cell styles.
-- Every interaction reruns the script. Gemini is called only from the "Extract" button; the results are
+- Every interaction reruns the script. The model (LLM_PROVIDER) is called only from the "Extract" button; the results are
   kept in st.session_state, so reruns never call it again. The field inputs sit in an st.form, so typing
   does not rerun; values are saved into FormReview.edits on submit. Widget state cannot hold the edits,
   because Streamlit drops the state of a widget that was not rendered in the last run (other form shown).
@@ -44,13 +44,14 @@ from src.constants import (
     SUGGESTION_LABEL,
 )
 from src.excel_exporter import to_xlsx_bytes
+from src.llm_provider import LLMError, LLMQuotaError, check_configured
 from src.validators import list_approved_senders
 
 st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide")
 
 SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירת טפסים", "export": "ייצוא"}
 UPLOAD_TYPES = ["pdf", "png", "jpg", "jpeg"]
-DEV_CACHE_BANNER = ("**מצב פיתוח: DEV_CACHE פעיל.** תשובות Gemini (שעלולות לכלול נתונים אישיים) נשמרות בדיסק "
+DEV_CACHE_BANNER = ("**מצב פיתוח: DEV_CACHE פעיל.** תשובות המודל (שעלולות לכלול נתונים אישיים) נשמרות בדיסק "
                     "בתיקייה data/dev_cache, כדי שהרצה חוזרת על אותם עמודים לא תעלה כסף. "
                     "לקבצי הדוגמה בלבד – אסור להעלות טפסים אמיתיים במצב זה.")
 
@@ -103,12 +104,21 @@ def reviews() -> list:
 
 
 def config_problem():
-    """Hebrew message when the API key or model is not configured, else None."""
+    """Hebrew message when the selected provider's API key or model is not configured, else None."""
     try:
-        config.GEMINI_API_KEY, config.GEMINI_MODEL  # noqa: B018 - raises when missing
+        check_configured()
     except RuntimeError as exc:
-        return f"ההגדרות חסרות: {exc}"
+        return f"ההגדרות חסרות ({config.LLM_PROVIDER}): {exc}"
     return None
+
+
+def run_error_message(exc: Exception) -> str:
+    """Hebrew explanation of a run that stopped. Provider error messages never contain form content."""
+    if isinstance(exc, LLMQuotaError):
+        return f"הריצה נעצרה – השירות דחה את הבקשות (מכסה, מפתח API או שם מודל). {exc}"
+    if isinstance(exc, LLMError):
+        return f"שגיאה בקריאה למודל. {exc}"
+    return f"{type(exc).__name__}: {exc}"
 
 
 # ------------------------------------------------------------------ extraction (background thread)
@@ -128,8 +138,8 @@ def run_extraction(files: list) -> None:
     def target() -> None:
         try:
             outcome["records"] = process_files(payload, report)
-        except Exception as exc:  # shown to the user; GeminiError messages never contain form content
-            outcome["error"] = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:  # shown to the user; LLMError messages never contain form content
+            outcome["error"] = run_error_message(exc)
 
     worker = threading.Thread(target=target, daemon=True)
     worker.start()
@@ -250,6 +260,12 @@ def _field_card(review: rs.FormReview, key: str, senders: list, nonce: int) -> o
             st.caption("קריאות נוספות של המנוע: " + " | ".join(alternatives))
         if key in rec.confidences and not rec.error:
             st.caption(f"ביטחון המודל: {rec.confidences[key]:.0%}")
+        if rec.notes.get(key):
+            st.caption(f"מקור לפי המודל: {rec.notes[key]}")
+        raw_text = rec.raw_texts.get(key)
+        if raw_text and raw_text != review.value(key):
+            # A reading aid, never a value: it may be partial ("?" = a character the model could not read).
+            st.caption(f"טקסט כפי שנקרא (לא ערך מאושר, ? = תו לא קריא): {raw_text}")
     return value
 
 
@@ -293,7 +309,9 @@ def screen_review(senders: list) -> None:
     st.subheader(f"טופס {pos + 1} מתוך {len(items)} · {status}")
     st.caption(f"{review.label()} · {rec.metadata.get('form_type', '')}")
     if rec.error:
-        st.error("החילוץ האוטומטי נכשל בטופס זה – יש להקליד את השדות ידנית מתוך התמונה.")
+        # The error text holds only status codes / error types, never form content.
+        st.error("החילוץ האוטומטי נכשל בטופס זה – יש להקליד את השדות ידנית מתוך התמונה.\n\n"
+                 f"פרטי השגיאה: {rec.error}")
     for code in rec.split_flags:
         st.warning(SPLIT_FLAG_LABELS.get(code, code))
 

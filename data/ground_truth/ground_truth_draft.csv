@@ -1,0 +1,16 @@
+source_file,page_numbers,first_name,last_name,id_number,central_numbers,received_date,sending_entity,commitment_numbers,tags,split
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",1,ישראל,ישראלי,0011223344,939376,18/06/2026,מאוחדת,730578626,printed_numbers;stamp,tune
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",9,ישראל,ישראלי,11223344,937309;937310;937311,01/06/2026,מכבי,50364186,multi_central;stamp;paid5,tune
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",8,ישראל,ישראלי,0011223344,939404,18/06/2026,לאומית,990012538,printed_numbers;stamp,tune
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",3,ישראל,ישראלי,001122334,939273,,לאומית,127138045,sheba_printout;rotated;handwritten_central;no_received_date;paid5,tune
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",13,ישראל,ישראלי,11223344,947674,,שערי צדק,251493,printed_numbers;no_received_date;paid5,tune
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",2,ישראל,ישראלי,UNREADABLE,939158,16/06/2026,מאוחדת,730542025,sheba_printout;handwritten_central;draft,test
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",5,ישראל,ישראלי,01122334,939539,21/06/2026,כללית,304497989,printed_numbers;stamp;draft,test
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",6,ישראל,ישראלי,0011223344,939443,18/06/2026,כללית,483263113,printed_numbers;stamp;collection_date;draft,test
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",10,ישראל,ישראלי,0011223344,UNREADABLE,18/06/2026,מכבי,260630224,handwritten_central;handwritten_date;draft,test
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",15,ישראל,ישראלי,11223344,945504,10/08/2026,"רמב""ם",944000351,printed_numbers;stamp;collection_date;draft;paid5,tune
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",17,ישראל,ישראלי,11223344,945926,UNREADABLE,רוזנבלט,,no_commitment;faint_stamp;draft,tune
+"התחייבויות - דוגמאות, חלק 1 (PDF).pdf",20,ישראל,ישראלי,11223344,946854,20/08/2026,"צה""ל",109982530,faint_stamp;printed_numbers;draft,test
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",6,ישראל,ישראלי,11223344,945992,13/08/2026,ברזילי,UNREADABLE,handwritten_commitment;handwritten_date;draft;paid5,tune
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",12,ישראל,ישראלי,11223344,947468;947469,25/08/2026,וולפסון,7254627,multi_central;trap_number;draft,test
+"התחייבויות - דוגמאות, חלק 2 (PDF).pdf",14,ישראל,ישראלי,11223344,947328,24/08/2026,לניאדו,X132767,rotated;alphanumeric;stamp;draft,tune

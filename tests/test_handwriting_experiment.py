@@ -131,11 +131,11 @@ def restore_engine(monkeypatch):
     from src import config
     from src import extraction_engine as ee
 
-    for name in ("generate_json", "_generate_with_transport_retry", "_cache_get", "_cache_put"):
+    for name in ("generate_json", "_call_model", "_cache_get", "_cache_put"):
         monkeypatch.setattr(ee, name, getattr(ee, name))
     monkeypatch.setattr(config, "DEV_CACHE", False)
     monkeypatch.setattr(config, "DEV_CACHE_DIR", Path(__file__).parent / "_no_such_cache_dir")
-    monkeypatch.setattr(config, "GEMINI_MODEL", "test-model", raising=False)
+    monkeypatch.setenv("GEMINI_MODEL", "test-model")  # setattr would read the missing value first
     return ee
 
 
@@ -146,7 +146,7 @@ def test_guard_blocks_other_stages_and_caps_requests(restore_engine, monkeypatch
         text = '{"legible": false, "name": null, "confidence": 0}'
 
     calls = []
-    monkeypatch.setattr(ee, "_generate_with_transport_retry", lambda c, cfg: calls.append(1) or _Response())
+    monkeypatch.setattr(ee, "_call_model", lambda c, cfg: calls.append(1) or _Response())
     stats = hx.install_guard(max_requests=1, allowed_stages=("hw_read",), fresh=True)
     with pytest.raises(ee.GeminiError, match="blocked"):
         ee.generate_json(["x"], {"type": "OBJECT"}, purpose="extract")

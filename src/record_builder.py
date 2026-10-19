@@ -30,6 +30,7 @@ from src.constants import (
 )
 from src.validators import (
     check_received_date,
+    days_between,
     format_number_list,
     match_sending_entity,
     normalize_number_list,
@@ -68,6 +69,12 @@ class Record:
     alternatives: dict = field(default_factory=dict)
     # Why fields were flagged and what was tried (codes / counts only, no values): see diagnostic_lines.
     diagnostics: dict = field(default_factory=dict)
+    # The model's note on where each value was read (field -> text; Claude only), in memory only,
+    # never exported or logged: shown to the reviewer next to the field.
+    notes: dict = field(default_factory=dict)
+    # The text exactly as the model saw it written, even partial (field -> text; Claude only), in memory only,
+    # never exported or logged. NEVER an approved value: shown to the reviewer as a reading aid.
+    raw_texts: dict = field(default_factory=dict)
 
     @property
     def needs_review(self) -> bool:
@@ -95,8 +102,13 @@ def _form_type_label(form_type: str, sender: Optional[str]) -> str:
     return label
 
 
-def _validate(key: str, value, source: Optional[str], today: date) -> tuple:
-    """Return (display_value, reason_or_None) for one non-empty field value."""
+def _validate(key: str, value, source: Optional[str], today: date, collection_date: Optional[str] = None) -> tuple:
+    """Return (display_value, reason_or_None) for one non-empty field value.
+
+    With STRICT_VALIDATION: a central number outside CENTRAL_NUMBER_PREFIXES is a warning flag (the value is
+    kept); a received date is flagged when older than RECEIVED_DATE_MAX_AGE_DAYS (not in EVAL_MODE), or not
+    0..RECEIVED_AFTER_COLLECTION_MAX_DAYS days after the collection date.
+    """
     if key in ("first_name", "last_name"):
         return value, ("invalid_format" if _DIGIT_RE.search(value) else None)
 
@@ -105,6 +117,9 @@ def _validate(key: str, value, source: Optional[str], today: date) -> tuple:
 
     if key == "central_numbers":
         ok = all(CENTRAL_NUMBER_RE.match(n) for n in value)
+        if ok and config.STRICT_VALIDATION and config.CENTRAL_NUMBER_PREFIXES and not all(
+                n.startswith(config.CENTRAL_NUMBER_PREFIXES) for n in value):
+            return format_number_list(value, LIST_SEPARATOR), "central_prefix"
         return format_number_list(value, LIST_SEPARATOR), (None if ok else "invalid_format")
 
     if key == "commitment_numbers":
@@ -114,7 +129,14 @@ def _validate(key: str, value, source: Optional[str], today: date) -> tuple:
     if key == "received_date":
         if source not in ACCEPTED_RECEIVED_DATE_SOURCES:
             return "", "date_source_rejected"  # never use admission/print dates
-        check = check_received_date(value, today=today)
+        check = check_received_date(value, today=today, check_age=not config.EVAL_MODE, max_age_days=(
+            config.RECEIVED_DATE_MAX_AGE_DAYS if config.STRICT_VALIDATION else None))
+        if check.reason is None and config.STRICT_VALIDATION and collection_date:
+            gap = days_between(collection_date, value)
+            if gap is not None and gap < 0:
+                return check.value, "date_before_collection"
+            if gap is not None and gap > config.RECEIVED_AFTER_COLLECTION_MAX_DAYS:
+                return check.value, "date_long_after_collection"
         return (check.value or ""), _DATE_REASONS.get(check.reason)
 
     if key == "sending_entity":
@@ -132,7 +154,7 @@ def _check_field(key: str, res, extraction, threshold: float, today: date) -> tu
     if not raw:
         # The extractor tells "on the form but illegible" apart from "not on the form".
         return "", ("unreadable" if res.status == "unreadable" else "missing")
-    display, reason = _validate(key, raw, res.source, today)
+    display, reason = _validate(key, raw, res.source, today, getattr(extraction, "collection_date", None))
     if reason:
         return display, reason
     if res.confidence < threshold:
@@ -193,7 +215,31 @@ def build_record(form, extraction, name_check=None, threshold: float = config.CO
                   suggestions=suggestions, field_crops=dict(field_crops or {}),
                   page_images=list(page_images or []),
                   alternatives=alternatives,
-                  diagnostics=_diagnostics(extraction, flags, recheck, outcomes, page_info))
+                  diagnostics=_diagnostics(extraction, flags, recheck, outcomes, page_info),
+                  notes={k: f.note for k, f in extraction.fields.items() if getattr(f, "note", None)},
+                  raw_texts={k: f.raw_text for k, f in extraction.fields.items() if getattr(f, "raw_text", None)})
+
+
+def apply_batch_id_consistency(records: list) -> int:
+    """The same patient (identical first + last name) must carry the same ID on every form of the batch.
+    Records whose ID differs from another record of that patient get the id_number flag id_batch_mismatch
+    (the value is kept for the reviewer). Returns the number of records flagged. No-op without
+    STRICT_VALIDATION or when names are missing (handwritten names are often empty)."""
+    if not config.STRICT_VALIDATION:
+        return 0
+    by_patient: dict = {}
+    for rec in records:
+        first, last = rec.values.get("first_name", "").strip(), rec.values.get("last_name", "").strip()
+        ident = _id_key(rec.values.get("id_number", ""))
+        if first and last and ident:
+            by_patient.setdefault((first, last), []).append((rec, ident))
+    flagged = 0
+    for entries in by_patient.values():
+        if len({ident for _, ident in entries}) > 1:
+            for rec, _ in entries:
+                rec.flags["id_number"] = "id_batch_mismatch"
+                flagged += 1
+    return flagged
 
 
 # ------------------------------------------------------------------ targeted re-read decisions
@@ -242,7 +288,8 @@ def _decide(key: str, orig, target, extraction, threshold: float, today: date) -
             return "unreadable", None, "unreadable", []
         return target.status, None, _KEEP, []
 
-    t_reason = _validate(key, target.value, target.source, today)[1]
+    collected = getattr(extraction, "collection_date", None)
+    t_reason = _validate(key, target.value, target.source, today, collected)[1]
     if t_reason is None and target.confidence < threshold:
         t_reason = "low_confidence"
     if t_reason is None and key == "id_number" and _id_key(target.value) in _other_numbers(extraction):
@@ -256,7 +303,7 @@ def _decide(key: str, orig, target, extraction, threshold: float, today: date) -
             return "filled", t_field, "reread_single_reading", []
         return "unverified", None, _KEEP, [t_text]
 
-    o_reason, o_text = _validate(key, o_raw, orig.source, today)[1], _as_text(key, o_raw)
+    o_reason, o_text = _validate(key, o_raw, orig.source, today, collected)[1], _as_text(key, o_raw)
     o_ok = o_reason is None
     if comparable(key, o_raw) == comparable(key, target.value):
         if key in REREAD_CONFIRM_FIELDS and o_ok and t_ok and orig.confidence < threshold:
@@ -324,7 +371,8 @@ def _diagnostics(extraction, flags: dict, recheck, outcomes: dict, page_info: Op
             "crops": sum(1 for r in recheck.readings if r.field == key) if recheck else 0,
         }
     return {"pages": list(page_info or []), "fields": fields,
-            "reread_error": bool(recheck and recheck.error)}
+            "reread_error": bool(recheck and recheck.error),
+            "highlight_crops": getattr(extraction, "highlight_crops", 0)}
 
 
 def diagnostic_lines(record, include_source: bool = False) -> list:
@@ -340,6 +388,8 @@ def diagnostic_lines(record, include_source: bool = False) -> list:
                      f"locations={d['locations']} reread={d['reread']} crops={d['crops']}")
     if record.diagnostics.get("reread_error"):
         lines.append(f"{where}: targeted re-read request failed")
+    if record.diagnostics.get("highlight_crops"):
+        lines.append(f"{where}: {record.diagnostics['highlight_crops']} highlight crop(s) sent with the page")
     return lines
 
 
@@ -469,14 +519,16 @@ def process_files(files, progress: Optional[ProgressCallback] = None) -> list:
     per-run folder under data/temp/ that is always deleted, even when the run fails.
     """
     # Imported here so the pure record-building code above has no API dependency.
-    from src.extraction_engine import GeminiQuotaError, NameCheck, empty_result, extract_form, verify_names
+    from src.extraction_engine import LLMQuotaError, NameCheck, empty_result, extract_form, verify_names
     from src.field_crops import page_previews, source_crops
     from src.field_reread import FieldRecheck, reread_fields, select_reread_fields
     from src.file_converter import cleanup_temp, convert_files, new_run_dir
     from src.form_splitter import split_forms
+    from src.highlight_crops import clear_debug_crops
     from src.image_preprocessor import preprocess
     from src.validators import list_approved_senders
 
+    clear_debug_crops()  # debug crops (HIGHLIGHT_DEBUG) of the previous run are never kept longer
     run_dir = new_run_dir()
     try:
         pages = convert_files(files, run_dir)
@@ -493,11 +545,12 @@ def process_files(files, progress: Optional[ProgressCallback] = None) -> list:
             # Previews even when extraction fails: the reviewer then types the form in by hand.
             previews = page_previews(crop_images, form.page_numbers)
             if quota_hit.is_set():
-                return empty_result("Gemini API quota exhausted"), None, None, page_info, {}, previews
+                return empty_result("API quota exhausted"), None, None, page_info, {}, previews
             try:
-                extraction = extract_form(images, senders)
+                extraction = extract_form(images, senders, crop_images,
+                                          form_label=f"form{form.index}_p{'-'.join(map(str, form.page_numbers))}")
                 name_check = verify_names(crop_images, extraction)
-            except GeminiQuotaError as exc:
+            except LLMQuotaError as exc:
                 quota_hit.set()
                 return empty_result(str(exc)), NameCheck(needed=False), None, page_info, {}, previews
             crops = source_crops(crop_images, extraction)
@@ -506,7 +559,7 @@ def process_files(files, progress: Optional[ProgressCallback] = None) -> list:
             keys = select_reread_fields(extraction, field_flags(extraction)[1])
             try:
                 recheck = reread_fields(crop_images, extraction, keys)
-            except GeminiQuotaError as exc:
+            except LLMQuotaError as exc:
                 quota_hit.set()  # keep the full-page extraction; the re-read simply did not happen
                 recheck = FieldRecheck(attempted=keys, error=str(exc))
             return extraction, name_check, recheck, page_info, crops, previews
@@ -521,6 +574,9 @@ def process_files(files, progress: Optional[ProgressCallback] = None) -> list:
 
         records = [build_record(f, e, c, recheck=r, page_info=info, field_crops=crops, page_images=previews)
                    for f, (e, c, r, info, crops, previews) in zip(forms, results)]
+        mismatched = apply_batch_id_consistency(records)
+        if mismatched:
+            logger.info("Batch ID check: %d record(s) flagged id_batch_mismatch", mismatched)
         for record in records:
             for line in diagnostic_lines(record):
                 logger.info(line)

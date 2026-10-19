@@ -13,14 +13,16 @@ value. Correctness is decided ONLY by the ground truth - passing validation neve
 correct. Unverified suggestions (handwritten names) and re-read alternatives never count as
 correct values.
 
-Breakdown per field: correct (not flagged) | correct but flagged for review | missing (expected
-a value, got none) | wrong but flagged | WRONG AND NOT FLAGGED (a silent error - the dangerous
-case) | no record (the form was not produced).
+Breakdown per field (OUTCOMES): correct_unflagged | correct_flagged (right, still shown for review) |
+wrong_flagged (wrong, but shown for review) | WRONG_SILENT (wrong and not flagged - the dangerous case) |
+empty_flagged / empty_unflagged (a value was expected, the output is empty) | no_record (the form was
+not produced). Only the correct_* outcomes count as correct.
 
 Label UNREADABLE (any case) marks a field a human cannot read with confidence from the image
-itself. Then an empty, flagged output is correct; an empty unflagged output is "missing"; ANY
-value - flagged or not - is a guess and counts as a silent error. It applies to the whole field
-(for a list, use it when not every number can be read).
+itself. Then an empty, flagged output is the right answer (correct_flagged); an empty unflagged output
+is empty_unflagged; a value is a guess: wrong_flagged when the reviewer sees the flag, wrong_silent only
+when it was not flagged. It applies to the whole field (for a list, use it when not every number can be
+read).
 
 Optional columns: tags (e.g. "handwritten;multi_central") and split ("tune" / "test"). Results
 are also reported per split and per tag; --split / --tag evaluate only the matching rows. Tune
@@ -96,7 +98,9 @@ SENDERS_PATH = DATA_DIR / "reference" / "approved_senders.json"
 PERSONAL_FIELDS = frozenset({"first_name", "last_name", "id_number"})
 UNREADABLE_LABEL = "UNREADABLE"
 SPLITS = ("tune", "test")
-OUTCOMES =("correct", "correct_flagged", "missing", "wrong_flagged", "wrong_unflagged", "no_record")
+OUTCOMES = ("correct_unflagged", "correct_flagged", "wrong_flagged", "wrong_silent", "empty_flagged",
+            "empty_unflagged", "no_record")
+CORRECT_OUTCOMES = frozenset({"correct_unflagged", "correct_flagged"})
 _NAME_PUNCT_RE = re.compile(r"[\"'`׳״.,:;()\-]")
 
 
@@ -134,18 +138,20 @@ def compare_row(truth: dict, values: dict) -> dict:
 
 
 def _outcome(ok: bool, got, flagged: bool, has_record: bool, unreadable: bool = False) -> str:
+    """One of OUTCOMES. A flagged field is shown to the reviewer in orange, so a wrong value there is
+    caught; only a wrong, unflagged value is silent."""
     if not has_record:
         return "no_record"
     if unreadable:
-        # Nobody can read it: empty + flagged is the right answer; any value is a guess.
+        # Nobody can read it: empty + flagged is the right answer; a value is a guess.
         if got:
-            return "wrong_unflagged"
-        return "correct_flagged" if flagged else "missing"
+            return "wrong_flagged" if flagged else "wrong_silent"
+        return "correct_flagged" if flagged else "empty_unflagged"
     if ok:
-        return "correct_flagged" if flagged else "correct"
+        return "correct_flagged" if flagged else "correct_unflagged"
     if not got:
-        return "missing"
-    return "wrong_flagged" if flagged else "wrong_unflagged"
+        return "empty_flagged" if flagged else "empty_unflagged"
+    return "wrong_flagged" if flagged else "wrong_silent"
 
 
 def summarize(results: list) -> dict:
@@ -169,7 +175,7 @@ def summarize(results: list) -> dict:
             got = "" if values is None else values.get(k, "")
             result = _outcome(ok, normalize_value(k, got), k in flags, values is not None,
                               unreadable=is_unreadable_label(truth.get(k)))
-            ok = result in ("correct", "correct_flagged")
+            ok = result in CORRECT_OUTCOMES
             per_field[k][1] += 1
             per_field[k][0] += ok
             breakdown[k][result] += 1
@@ -283,7 +289,7 @@ def install_request_guard(stats: dict, cache_only: bool = False, max_requests: O
 
     for key, value in new_stats().items():
         stats.setdefault(key, value)
-    original_generate_json, original_call = ee.generate_json, ee._generate_with_transport_retry
+    original_generate_json, original_call = ee.generate_json, ee._call_model
     lock = threading.Lock()
 
     def generate_json(*args, **kwargs):
@@ -311,7 +317,7 @@ def install_request_guard(stats: dict, cache_only: bool = False, max_requests: O
     if cache_only:
         config.DEV_CACHE = True
     ee.generate_json = generate_json
-    ee._generate_with_transport_retry = call
+    ee._call_model = call
 
 
 def _block_live_calls(stats: dict) -> None:
@@ -341,11 +347,12 @@ def print_report(summary: dict, show_values: bool = False) -> None:
         print(f"  {'ALL FIELDS':20s} {'':16s} {total_ok}/{total}  ({100 * total_ok / total:.0f}%)")
     if summary.get("breakdown"):
         print("\nBreakdown (correct = right value; flagged = shown for review):")
-        print(f"  {'field':20s} {'correct':>8s} {'correct':>8s} {'missing':>8s} {'wrong':>8s} {'WRONG':>9s} {'no':>7s}")
-        print(f"  {'':20s} {'':>8s} {'flagged':>8s} {'':>8s} {'flagged':>8s} {'UNFLAG.':>9s} {'record':>7s}")
+        top = ("correct", "correct", "wrong", "WRONG", "empty", "empty", "no")
+        bottom = ("unflag.", "flagged", "flagged", "SILENT", "flagged", "unflag.", "record")
+        print(f"  {'field':20s} " + " ".join(f"{t:>8s}" for t in top))
+        print(f"  {'':20s} " + " ".join(f"{t:>8s}" for t in bottom))
         for key, b in summary["breakdown"].items():
-            print(f"  {key:20s} " + " ".join(f"{b[o]:>{9 if o == 'wrong_unflagged' else 8 if o != 'no_record' else 7}d}"
-                                             for o in OUTCOMES))
+            print(f"  {key:20s} " + " ".join(f"{b.get(o, 0):>8d}" for o in OUTCOMES))
     sugg = {k: v for k, v in summary.get("suggestions", {}).items() if sum(v)}
     if sugg:
         print("\nUnverified suggestions (not counted as correct values):")
@@ -371,7 +378,7 @@ def _group_counts(summary: dict) -> dict:
         totals.update(b)
     return {"rows": next(iter(per_field.values()))[1] if per_field else 0,
             "ok": sum(ok for ok, _ in per_field.values()), "total": sum(n for _, n in per_field.values()),
-            "silent_errors": totals["wrong_unflagged"], "missing": totals["missing"],
+            "silent_errors": totals["wrong_silent"], "missing": totals["empty_flagged"] + totals["empty_unflagged"],
             "per_field": {k: list(v) for k, v in per_field.items()}}
 
 
@@ -406,7 +413,13 @@ def run_info(stats: dict, records: list, cache_only: bool) -> dict:
     except (OSError, subprocess.SubprocessError):
         commit, dirty = "unknown", False
     try:
-        model_hash = hashlib.sha256(config.GEMINI_MODEL.encode("utf-8")).hexdigest()[:12]
+        try:
+            from src.llm_provider import get_provider
+
+            model = get_provider().model_id()
+        except ImportError:  # --engine-root of a tree from before the provider interface (Gemini only)
+            model = config.GEMINI_MODEL
+        model_hash = hashlib.sha256(model.encode("utf-8")).hexdigest()[:12]
     except RuntimeError:
         model_hash = "unset"
     errors = sum(1 for r in records if r is None or getattr(r, "error", None))
@@ -437,14 +450,15 @@ def counts_only(summary: dict, outcomes: Optional[dict] = None, truth_rows: Opti
             "run": info or {}}
 
 
-def print_comparison(baseline: dict, current: dict) -> bool:
-    """Print the per-field change. Returns False (and prints why) when the runs are not comparable."""
+def print_comparison(baseline: dict, current: dict, allow_model_change: bool = False) -> bool:
+    """Print the per-field change. Returns False (and prints why) when the runs are not comparable.
+    allow_model_change: compare runs of different models on purpose (e.g. Gemini -> Claude)."""
     problems = []
     if baseline.get("labels_sha256") != current.get("labels_sha256") or baseline.get("rows") != current.get("rows"):
         problems.append("different ground-truth rows or labels")
     b_run, c_run = baseline.get("run", {}), current.get("run", {})
-    if b_run.get("model_sha256") and b_run.get("model_sha256") != c_run.get("model_sha256"):
-        problems.append("different model")
+    if b_run.get("model_sha256") and b_run.get("model_sha256") != c_run.get("model_sha256") and not allow_model_change:
+        problems.append("different model (use --compare-models to compare models on purpose)")
     for name, run in (("baseline", b_run), ("current", c_run)):
         if run and not run.get("complete", False):
             problems.append(f"{name} run is incomplete (cache misses, request budget or failed forms)")
@@ -474,6 +488,8 @@ def main() -> None:
     parser.add_argument("--engine-root", type=Path, help="evaluate the engine code of another tree (see doc)")
     parser.add_argument("--save-summary", type=Path, help="write counts (no values) to this JSON file")
     parser.add_argument("--compare", type=Path, help="baseline summary JSON from --save-summary")
+    parser.add_argument("--compare-models", action="store_true",
+                        help="with --compare: allow a baseline from another model (e.g. Gemini vs Claude)")
     parser.add_argument("--show-values", action="store_true", help="print values of non-personal fields")
     parser.add_argument("--split", choices=SPLITS + ("unassigned",), help="evaluate only rows of this split")
     parser.add_argument("--tag", help="evaluate only rows carrying this tag")
@@ -504,16 +520,34 @@ def main() -> None:
 
         print(f"Live API requests per stage: {info['live_requests'] or 'none'}"
               f"{'  (BUDGET REACHED)' if info['budget_exhausted'] else ''}")
+        total_cost, priced = 0.0, True
         for stage, usage in ee.get_usage_by_purpose().items():
+            cost = stage_cost(usage)
+            priced = priced and cost is not None
+            total_cost += cost or 0.0
             print(f"  tokens {stage:14s} requests={usage['requests']} prompt={usage['prompt_tokens']} "
-                  f"output={usage['output_tokens']}")
+                  f"(cache read={usage.get('cache_read_tokens', 0)} write={usage.get('cache_write_tokens', 0)}) "
+                  f"output={usage['output_tokens']} time={usage.get('seconds', 0):.0f}s"
+                  + (f" cost=${cost:.4f}" if cost is not None else ""))
+        if priced and records:
+            print(f"  total cost ${total_cost:.4f} for {len(records)} form(s): ${total_cost / len(records):.4f} per form")
     if not info["complete"]:
         print("Results are INCOMPLETE (cache misses, request budget or failed forms): do not compare them.")
     current = counts_only(summary, outcomes, truth_rows, info, groups)
     if args.save_summary:
         args.save_summary.write_text(json.dumps(current, ensure_ascii=False, indent=1), encoding="utf-8")
     if args.compare:
-        print_comparison(json.loads(args.compare.read_text(encoding="utf-8")), current)
+        print_comparison(json.loads(args.compare.read_text(encoding="utf-8")), current, args.compare_models)
+
+
+def stage_cost(usage: dict) -> Optional[float]:
+    """USD for one stage's usage, summed over the models that answered it; None if any price is unknown."""
+    from src.llm_provider import cost_usd
+
+    models = usage.get("models") or {}
+    if len(models) != 1:  # per-model token split is not tracked; price only single-model stages
+        return None
+    return cost_usd(next(iter(models)), usage)
 
 
 if __name__ == "__main__":

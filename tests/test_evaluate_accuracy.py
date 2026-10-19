@@ -78,7 +78,7 @@ def test_saved_summary_has_counts_only_and_comparison(capsys):
     assert "111111" not in text and "יסמין" not in text and "11223344" not in text and "ישראל" not in text
     assert ev.print_comparison(base, now) is True
     out = capsys.readouterr().out
-    assert "central_numbers      0/1 -> 1/1 (+1)" in out and "wrong_unflagged 1->0" in out
+    assert "central_numbers      0/1 -> 1/1 (+1)" in out and "wrong_silent 1->0" in out
     assert "Fixed: f.pdf p13 first_name" in out
 
 
@@ -101,17 +101,17 @@ def test_breakdown_separates_flagged_missing_and_silent_errors():
     values = dict(GOOD, first_name="", id_number="99999999", central_numbers="111111", sending_entity="מכבי")
     flags = {"id_number": "invalid_id", "commitment_numbers": "low_confidence"}
     b = ev.summarize([(TRUTH, values, None, flags), (TRUTH, None)])["breakdown"]
-    assert b["first_name"] == dict.fromkeys(ev.OUTCOMES, 0) | {"missing": 1, "no_record": 1}
+    assert b["first_name"] == dict.fromkeys(ev.OUTCOMES, 0) | {"empty_unflagged": 1, "no_record": 1}
     assert b["id_number"]["wrong_flagged"] == 1
-    assert b["central_numbers"]["wrong_unflagged"] == 1             # a silent error
+    assert b["central_numbers"]["wrong_silent"] == 1                # a silent error
     assert b["commitment_numbers"]["correct_flagged"] == 1           # right, but still shown for review
-    assert b["received_date"]["correct"] == 1                        # expected empty, got empty
+    assert b["received_date"]["correct_unflagged"] == 1              # expected empty, got empty
 
 
 def test_validation_never_makes_a_value_correct():
     # A checksum-valid ID that differs from the label is wrong, flagged or not.
     out = ev.summarize([(TRUTH, dict(GOOD, id_number="000000018"), None, {})])
-    assert out["per_field"]["id_number"] == (0, 1) and out["breakdown"]["id_number"]["wrong_unflagged"] == 1
+    assert out["per_field"]["id_number"] == (0, 1) and out["breakdown"]["id_number"]["wrong_silent"] == 1
 
 
 def test_id_leading_zero_is_the_same_id():
@@ -153,10 +153,10 @@ def guarded(monkeypatch):
 
     monkeypatch.setattr(config, "DEV_CACHE", False)
     monkeypatch.setattr(config, "DEV_CACHE_DIR", Path(__file__).parent / "_no_such_cache_dir")
-    monkeypatch.setattr(ee, "_generate_with_transport_retry", ee._generate_with_transport_retry)  # restored after
+    monkeypatch.setattr(ee, "_call_model", ee._call_model)  # restored after
     monkeypatch.setattr(ee, "generate_json", ee.generate_json)                                    # restored after
-    monkeypatch.setattr(ee, "get_client", lambda: pytest.fail("live API call attempted"))
-    monkeypatch.setattr(config, "GEMINI_MODEL", "test-model", raising=False)
+    monkeypatch.setattr(ee, "_call_model", lambda *a: pytest.fail("live API call attempted"))
+    monkeypatch.setenv("GEMINI_MODEL", "test-model")  # setattr would read the missing value first
     return ee
 
 
@@ -178,7 +178,7 @@ def test_request_budget_stops_live_calls(guarded, monkeypatch):
         text = '{"ok": true}'
 
     calls = []
-    monkeypatch.setattr(ee, "_generate_with_transport_retry", lambda contents, cfg: calls.append(1) or _Response())
+    monkeypatch.setattr(ee, "_call_model", lambda contents, cfg: calls.append(1) or _Response())
     stats = ev.new_stats()
     ev.install_request_guard(stats, max_requests=2)
     ee.generate_json(["a"], {"type": "OBJECT"}, purpose="extract")
@@ -231,16 +231,29 @@ def test_unreadable_label_empty_and_flagged_is_correct():
     assert not [f for f in out["failures"] if f["field"] in ("id_number", "central_numbers")]
 
 
-@pytest.mark.parametrize("flags", [{}, {"id_number": "low_confidence"}])
-def test_unreadable_label_any_value_is_a_silent_error(flags):
+@pytest.mark.parametrize("flags, outcome", [({}, "wrong_silent"), ({"id_number": "low_confidence"}, "wrong_flagged")])
+def test_unreadable_label_value_is_silent_only_when_unflagged(flags, outcome):
+    # A value on an unreadable field is a guess (never correct); the reviewer sees it when it is flagged.
     out = ev.summarize([(UNREADABLE_TRUTH, dict(GOOD, id_number="11223344"), None, flags)])
     assert out["per_field"]["id_number"] == (0, 1)
-    assert out["breakdown"]["id_number"]["wrong_unflagged"] == 1      # a guess, even when flagged
+    assert out["breakdown"]["id_number"][outcome] == 1
+    assert sum(out["breakdown"]["id_number"].values()) == 1
 
 
-def test_unreadable_label_empty_but_unflagged_is_missing():
+def test_unreadable_label_empty_but_unflagged_is_empty_unflagged():
     out = ev.summarize([(UNREADABLE_TRUTH, dict(GOOD, id_number=""), None, {})])
-    assert out["breakdown"]["id_number"]["missing"] == 1 and out["per_field"]["id_number"] == (0, 1)
+    assert out["breakdown"]["id_number"]["empty_unflagged"] == 1 and out["per_field"]["id_number"] == (0, 1)
+
+
+@pytest.mark.parametrize("got, flagged, outcome", [
+    ("11223344", False, "correct_unflagged"), ("11223344", True, "correct_flagged"),
+    ("99999999", True, "wrong_flagged"), ("99999999", False, "wrong_silent"),
+    ("", True, "empty_flagged"), ("", False, "empty_unflagged"),
+])
+def test_every_outcome_of_a_readable_field(got, flagged, outcome):
+    flags = {"id_number": "low_confidence"} if flagged else {}
+    b = ev.summarize([(TRUTH, dict(GOOD, id_number=got), None, flags)])["breakdown"]["id_number"]
+    assert b == dict.fromkeys(ev.OUTCOMES, 0) | {outcome: 1}
 
 
 def test_unreadable_label_never_matches_the_literal_text():

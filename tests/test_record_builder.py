@@ -41,7 +41,7 @@ def _record(**overrides):
 # ---- parse_extraction ----------------------------------------------------------
 
 def test_parse_extraction_tolerates_garbage():
-    res = ee.parse_extraction({"form_type": "x", "id_number": {"value": "  ", "confidence": "high"},
+    res = ee.parse_extraction({"form_type": "x", "id_number": {"value": "  ", "confidence": "sure"},
                                "central_numbers": {"value": "939376", "confidence": 2}})
     assert res.form_type == "unknown"
     assert res.fields["id_number"].value is None
@@ -290,11 +290,14 @@ class _FakeModels:
 
 @pytest.fixture
 def fake_client(monkeypatch, tmp_path):
+    """The Gemini provider with a fake genai client (the cache / usage / retry tests below)."""
     from src import config
+    from src import llm_provider
 
     models = _FakeModels()
     client = type("C", (), {"models": models})()
-    monkeypatch.setattr(ee, "get_client", lambda: client)
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm_provider.get_provider_named("gemini"), "client", lambda: client)
     monkeypatch.setattr(config, "DEV_CACHE_DIR", tmp_path / "dev_cache")
     monkeypatch.setenv("GEMINI_MODEL", "test-model")
     return models
@@ -358,7 +361,7 @@ def test_transport_errors_are_retried(fake_client, monkeypatch):
     from src import config
 
     monkeypatch.setattr(config, "DEV_CACHE", False)
-    monkeypatch.setattr(ee, "TRANSPORT_RETRY_DELAY_S", 0)
+    monkeypatch.setattr("src.llm_provider.TRANSPORT_RETRY_DELAY_S", 0)
     real = fake_client.generate_content
     failures = {"left": 2}
 
@@ -378,7 +381,7 @@ def test_transport_errors_give_up_after_max_attempts(fake_client, monkeypatch):
     from src import config
 
     monkeypatch.setattr(config, "DEV_CACHE", False)
-    monkeypatch.setattr(ee, "TRANSPORT_RETRY_DELAY_S", 0)
+    monkeypatch.setattr("src.llm_provider.TRANSPORT_RETRY_DELAY_S", 0)
     calls = {"n": 0}
 
     def down(**kwargs):
@@ -648,16 +651,20 @@ def test_commitment_kept_when_no_id_or_different():
 
 # ---- thinking level ---------------------------------------------------------------------
 
-def test_thinking_level_is_sent_and_keys_the_cache(monkeypatch):
+def test_thinking_level_is_sent_and_keys_the_cache(fake_client, monkeypatch):
     from google.genai import types
 
+    from src import config
+
+    monkeypatch.setattr(config, "DEV_CACHE", False)
     sent = {}
+    real = fake_client.generate_content
 
-    def fake(contents, cfg):
-        sent["cfg"] = cfg
-        return _FakeResponse()
+    def spy(**kwargs):
+        sent["cfg"] = kwargs["config"]
+        return real(**kwargs)
 
-    monkeypatch.setattr(ee, "_generate_with_transport_retry", fake)
+    monkeypatch.setattr(fake_client, "generate_content", spy)
     ee.generate_json(["x"], {"type": "OBJECT"}, thinking_level="high")
     assert sent["cfg"].thinking_config.thinking_level == types.ThinkingLevel.HIGH
     ee.generate_json(["x"], {"type": "OBJECT"})
