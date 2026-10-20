@@ -45,6 +45,7 @@ from src.constants import (
     SUGGESTION_LABEL,
 )
 from src.excel_exporter import to_xlsx_bytes
+from src.field_crops import outline_boxes
 from src.claude_client import LLMError, LLMQuotaError, check_configured
 from src.validators import list_approved_senders
 
@@ -193,6 +194,32 @@ div[class*="st-key-cardflag_"] {{
     margin-inline-end: 8px; }}
 .lx-legend {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: {FLAG_COLOR};
     vertical-align: middle; margin-inline-end: 4px; }}
+/* Review screen: field cards, confidence chips, sticky action bar and form image. */
+div[class*="st-key-cardok_"] {{ background: #111829; }}
+div[class*="st-key-cardflag_"] {{ background: #1A1508 !important; }}
+div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 96px; object-fit: contain; background: #F4F2EC;
+    border-radius: 8px; }}
+.lx-card-head {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; }}
+.lx-chip {{ font-size: 11px; font-weight: 600; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }}
+.lx-chip.ok {{ color: {APPROVED_COLOR}; background: #0D2A27; }}
+.lx-chip.warn {{ color: #FFC15C; background: #2A1E05; }}
+.lx-chip.big {{ font-size: 12px; padding: 3px 10px; border: 1px solid currentColor; }}
+.flag-reason {{ font-size: 13px; margin-top: 6px; }}
+.lx-title-row {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }}
+.lx-title-row .lx-h1 {{ font-size: 30px; margin: 0; }}
+.lx-dim {{ color: #6F7C99; font-weight: 500; }}
+.lx-mono {{ font-family: "JetBrains Mono", monospace; }}
+.lx-fields-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }}
+.lx-approved {{ font-weight: 600; color: {APPROVED_COLOR}; }}
+.lx-outline {{ display: inline-block; width: 12px; height: 12px; border: 2px solid {FLAG_COLOR}; border-radius: 3px;
+    box-sizing: border-box; vertical-align: middle; margin-inline-end: 6px; }}
+.st-key-actionbar {{ position: sticky; bottom: 0; z-index: 5; background: #0E1422; border: 1px solid #1E2944;
+    border-radius: 14px; padding: 12px 14px; margin-top: 8px; }}
+.st-key-approve button {{ min-height: 50px; padding: 0 24px; border-radius: 12px; font-size: 16px;
+    box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+.st-key-save button, .st-key-reopen button {{ min-height: 50px; border-radius: 12px; }}
+.st-key-force_approve button {{ background: {FLAG_COLOR}; color: #1A1100; border: none; font-weight: 600; min-height: 44px; }}
+[data-testid="stColumn"]:has(.st-key-formimage) {{ position: sticky; top: 16px; align-self: flex-start; }}
 </style>
 """
 
@@ -412,20 +439,30 @@ def screen_summary() -> None:
         st.rerun()
 
 
+def _confidence_chip(value: float) -> str:
+    """The extractor reports high / medium / low (constants.CONFIDENCE_LABELS); only high passes the threshold."""
+    if value >= config.CONFIDENCE_THRESHOLD:
+        return '<span class="lx-chip ok">ביטחון גבוה</span>'
+    return f'<span class="lx-chip warn">ביטחון {"בינוני" if value >= 0.5 else "נמוך"}</span>'
+
+
 def _field_card(review: rs.FormReview, key: str, senders: list, nonce: int) -> object:
     """One field card inside the form. Returns the input's current value."""
     rec = review.record
     flag = review.open_flags().get(key)
     card_key = f"{'cardflag' if flag else 'cardok'}_{review.form_index}_{key}_{nonce}"
     with st.container(border=True, key=card_key):
-        title = f"**{FIELD_HEADERS[key]}**"
+        chip = _confidence_chip(rec.confidences[key]) if key in rec.confidences and not rec.error else ""
+        title = f'<div class="lx-card-head"><strong>{FIELD_HEADERS[key]}</strong>{chip}</div>'
         if flag:
-            title += f' &nbsp; <span class="flag-reason">⚠ {FLAG_REASONS.get(flag, flag)}</span>'
+            title += f'<div class="flag-reason">⚠ {FLAG_REASONS.get(flag, flag)}</div>'
         st.markdown(title, unsafe_allow_html=True)
 
         crops = rec.field_crops.get(key, [])
         for crop in crops:
-            caption = f"עמוד {crop.page}" if len(rec.page_images) > 1 else None
+            caption = None
+            if len(rec.page_images) > 1 and crop.page <= len(rec.page_images):
+                caption = f"עמוד {rec.page_images[crop.page - 1].page_number}"
             st.image(crop.jpeg, caption=caption, width="stretch")
         if not crops and not rec.error:
             st.caption("אין חיתוך מקור: המודל לא סימן היכן הערך מופיע בטופס.")
@@ -437,24 +474,26 @@ def _field_card(review: rs.FormReview, key: str, senders: list, nonce: int) -> o
             value = st.selectbox(FIELD_HEADERS[key], options, index=options.index(current), key=input_key,
                                  label_visibility="collapsed", format_func=lambda o: o or "— לא נבחר —")
         else:
-            value = st.text_input(FIELD_HEADERS[key], value=current, key=input_key, label_visibility="collapsed")
+            value = st.text_input(FIELD_HEADERS[key], value=current, key=input_key, label_visibility="collapsed",
+                                  placeholder="להקלדה מתוך התמונה" if rec.error else "ריק – להשלמה")
 
         suggestion = rec.suggestions.get(key)
         if suggestion and not review.value(key):
-            st.markdown(f'<span class="suggestion">{SUGGESTION_LABEL}:</span> (העתיקו לשדה רק אם הקריאה נכונה)',
+            st.markdown(f'<span class="suggestion">{SUGGESTION_LABEL}</span> · העתיקו לשדה רק אם הקריאה נכונה',
                         unsafe_allow_html=True)
-            st.code(suggestion, language=None)
+            st.code(suggestion, language=None)  # st.code has a copy button
+        details = []
         alternatives = rec.alternatives.get(key)
         if alternatives and flag:
-            st.caption("קריאות נוספות של המנוע: " + " | ".join(alternatives))
-        if key in rec.confidences and not rec.error:
-            st.caption(f"ביטחון המודל: {rec.confidences[key]:.0%}")
+            details.append("קריאות נוספות של המנוע: " + " | ".join(alternatives))
         if rec.notes.get(key):
-            st.caption(f"מקור לפי המודל: {rec.notes[key]}")
+            details.append(f"מקור לפי המודל: {rec.notes[key]}")
         raw_text = rec.raw_texts.get(key)
         if raw_text and raw_text != review.value(key):
             # A reading aid, never a value: it may be partial ("?" = a character the model could not read).
-            st.caption(f"טקסט כפי שנקרא (לא ערך מאושר, ? = תו לא קריא): {raw_text}")
+            details.append(f"טקסט כפי שנקרא (לא ערך מאושר, ? = תו לא קריא): {raw_text}")
+        if details:
+            st.caption(" · ".join(details))
     return value
 
 
@@ -476,56 +515,96 @@ def _after_approval(pos: int, empty: list) -> None:
         go("review", nxt)
 
 
+def _page_with_flags(review: rs.FormReview, page: int, jpeg: bytes) -> tuple:
+    """(preview with the open-flag boxes of this page outlined in orange, names of the outlined fields)."""
+    boxes, names = [], []
+    for key in review.open_flags():
+        located = [c.box for c in review.record.field_crops.get(key, []) if c.page == page]
+        if located:
+            boxes += [b for b in located if b not in boxes]
+            names.append(FIELD_HEADERS[key])
+    return outline_boxes(jpeg, boxes), names
+
+
 def screen_review(senders: list) -> None:
     items = reviews()
     pos = min(st.session_state.pos, len(items) - 1)
     review = items[pos]
     rec = review.record
     nonce = st.session_state.nonce
+    meta = rec.metadata
 
-    nav = st.columns([1, 1, 1, 3])
-    if nav[0].button("→ הקודם", disabled=pos == 0, width="stretch", key="prev"):
-        go("review", pos - 1)
-        st.rerun()
-    if nav[1].button("הבא ←", disabled=pos == len(items) - 1, width="stretch", key="next"):
-        go("review", pos + 1)
-        st.rerun()
-    if nav[2].button("חזרה לסיכום", width="stretch", key="to_summary"):
-        go("summary")
-        st.rerun()
+    head_col, nav_col = st.columns([3, 1], vertical_alignment="bottom")
+    with head_col:
+        chip = ('<span class="lx-chip ok big">אושר</span>' if review.approved
+                else '<span class="lx-chip warn big">ממתין לאישור</span>')
+        st.markdown(
+            f'<p class="lx-kicker">שלב 3 מתוך 4 · סקירה</p>'
+            f'<div class="lx-title-row"><h1 class="lx-h1">טופס {pos + 1} <span class="lx-dim">/ {len(items)}</span>'
+            f' · {meta.get("form_type", "") or "לא מזוהה"}</h1>{chip}</div>'
+            f'<p class="lx-muted">קובץ <bdi class="lx-mono">{meta.get("source_file", "")}</bdi>'
+            f' · עמודים <bdi dir="ltr">{meta.get("page_numbers", "")}</bdi></p>', unsafe_allow_html=True)
+    with nav_col:
+        prev_col, next_col = st.columns(2)
+        if prev_col.button("הקודם", disabled=pos == 0, width="stretch", key="prev",
+                          icon=":material/chevron_left:"):  # Material icons mirror in RTL: points right
+            go("review", pos - 1)
+            st.rerun()
+        if next_col.button("הבא", disabled=pos == len(items) - 1, width="stretch", key="next",
+                           icon=":material/chevron_right:"):
+            go("review", pos + 1)
+            st.rerun()
 
-    status = "✅ אושר" if review.approved else "⏳ ממתין לאישור"
-    st.subheader(f"טופס {pos + 1} מתוך {len(items)} · {status}")
-    st.caption(f"{review.label()} · {rec.metadata.get('form_type', '')}")
     if rec.error:
         # The error text holds only status codes / error types, never form content.
-        st.error("החילוץ האוטומטי נכשל בטופס זה – יש להקליד את השדות ידנית מתוך התמונה.\n\n"
-                 f"פרטי השגיאה: {rec.error}")
+        st.error("**החילוץ האוטומטי נכשל בטופס זה – יש להקליד את השדות ידנית מתוך התמונה.**\n\n"
+                 f"פרטי השגיאה: {rec.error}", icon=":material/error:")
     for code in rec.split_flags:
-        st.warning(SPLIT_FLAG_LABELS.get(code, code))
+        st.warning(SPLIT_FLAG_LABELS.get(code, code), icon=":material/warning:")
 
     fields_col, image_col = st.columns([6, 5], gap="large")  # RTL: the first column is on the right
-    with image_col:
+    with image_col, st.container(border=True, key="formimage"):
         pages = rec.page_images
         if pages:
-            shown = pages[0]
+            index = 0
             if len(pages) > 1:
                 numbers = [p.page_number for p in pages]
                 chosen = st.radio("עמוד", numbers, horizontal=True, key=f"page_{rec.form_index}_{nonce}",
-                                  format_func=lambda n: f"עמוד {n}")
-                shown = pages[numbers.index(chosen)]
-            st.image(shown.jpeg, width="stretch")
+                                  format_func=lambda n: f"עמוד {n}", label_visibility="collapsed")
+                index = numbers.index(chosen)
+            image, outlined = _page_with_flags(review, index + 1, pages[index].jpeg)
+            st.image(image, width="stretch")
+            if outlined:
+                st.markdown('<span class="lx-muted"><span class="lx-outline"></span>מסומנים בכתום על הטופס: '
+                            + ", ".join(outlined) + "</span>", unsafe_allow_html=True)
         else:
             st.info("אין תמונה זמינה לטופס זה.")
 
     with fields_col:
+        open_count = len(review.open_flags())
+        st.markdown('<div class="lx-fields-head"><strong>שדות שחולצו</strong><span class="lx-muted">'
+                    + (f"{open_count} מתוך {len(FIELD_KEYS)} שדות לבדיקה" if open_count else
+                       ("כל השדות אושרו" if review.approved else "אין שדות מסומנים"))
+                    + "</span></div>", unsafe_allow_html=True)
         # enter_to_submit=False: Enter in a field must never approve a form by accident.
         with st.form(key=f"fields_{rec.form_index}_{nonce}", border=False, enter_to_submit=False):
-            entered = {key: _field_card(review, key, senders, nonce) for key in FIELD_KEYS}
-            b1, b2 = st.columns(2)
-            approve_clicked = b1.form_submit_button("אשר טופס ועבור לבא", type="primary", width="stretch",
-                                                    key="approve")
-            save_clicked = b2.form_submit_button("שמור בלי לאשר", width="stretch", key="save")
+            entered = {}
+            for row in range(0, len(FIELD_KEYS), 2):
+                cols = st.columns(2)
+                for col, key in zip(cols, FIELD_KEYS[row:row + 2]):
+                    with col:
+                        entered[key] = _field_card(review, key, senders, nonce)
+            approve_clicked = save_clicked = reopen_clicked = False
+            with st.container(key="actionbar", horizontal=True, vertical_alignment="center"):
+                if review.approved:
+                    st.markdown('<span class="lx-approved">✓ הטופס אושר</span>', unsafe_allow_html=True)
+                    reopen_clicked = st.form_submit_button("בטל אישור", key="reopen")
+                else:
+                    approve_clicked = st.form_submit_button("אשר טופס ועבור לבא", type="primary", key="approve",
+                                                            icon=":material/check:")
+                    save_clicked = st.form_submit_button("שמור בלי לאשר", key="save")
+                    st.markdown('<span class="lx-muted">שדה ריק ומסומן עדיף על ערך מנוחש</span>',
+                                unsafe_allow_html=True)
 
         if approve_clicked:
             result = rs.approve(review, entered)
@@ -541,19 +620,19 @@ def screen_review(senders: list) -> None:
             st.session_state.notice = "התיקונים נשמרו. הטופס עדיין לא אושר."
             st.session_state.nonce += 1
             st.rerun()
-
-        pending = st.session_state.pending
-        if pending and pending["pos"] == pos and not review.approved:
-            st.warning("בדיקת התקינות נכשלה בשדות הבאים. תקנו ואשרו שוב, או אשרו בכל זאת אם הערך נכון "
-                       "(למשל מספר דרכון):\n" + _warning_lines(pending["warnings"]))
-            if st.button("אשר בכל זאת", type="primary", key="force_approve"):
-                result = rs.approve(review, {}, force=True)
-                _after_approval(pos, result.empty)
-                st.rerun()
-        if review.approved and st.button("בטל אישור", key="reopen"):
+        if reopen_clicked:
             rs.reopen(review)
             st.session_state.nonce += 1
             st.rerun()
+
+        pending = st.session_state.pending
+        if pending and pending["pos"] == pos and not review.approved:
+            st.warning("**בדיקת התקינות נכשלה** – תקנו ואשרו שוב, או אשרו בכל זאת אם הערך נכון "
+                       "(למשל מספר דרכון):\n" + _warning_lines(pending["warnings"]), icon=":material/warning:")
+            if st.button("אשר בכל זאת", key="force_approve"):
+                result = rs.approve(review, {}, force=True)
+                _after_approval(pos, result.empty)
+                st.rerun()
 
 
 def screen_export() -> None:
