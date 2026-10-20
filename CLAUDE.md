@@ -140,15 +140,22 @@ These forms represent real patient data in production. Therefore:
 - Delete files in data/temp/ after each run. Do not save uploads to disk beyond what processing needs.
 
 Local database (approved by the user, replaces the old rule "nothing personal is stored"):
-- The app keeps a local SQLite file, data/db/labextract.db (git-ignored), so records survive closing the browser.
-- STORED: the 7 field values as exported, the form details (source file, page numbers, form type), the review
-  status and the reason codes of open flags (codes only).
-- ALSO STORED (approved by the user, so a saved form can be opened again with the cropped image next to every
-  field): the engine's record (values, flags, confidences, suggestions, alternatives, notes, raw text), the
-  reviewer's edits, and the field crops and page previews (images table). Rows and their images are deleted together.
-- NEVER STORED: the uploaded files themselves (only the crops and page previews derived from them).
-- There is NO automatic deletion. The only deletion is the manual "מחק את כל המאגר" button (with a confirmation
-  checkbox). Do not add automatic deletion unless the user asks.
+- The app keeps a local SQLite file, data/db/labextract.db (git-ignored), so records survive closing the browser and
+  a saved form can be reopened (src/record_store.py).
+- ALWAYS STORED: the 7 field values as exported, the form details (source file, page numbers, form type), the review
+  status, the reason codes of open flags (codes only), the reviewer's edits, and record_json (engine record: values,
+  flags, confidences, diagnostics codes, split flags).
+- FIELD CROPS are stored for every form, also after approval (JPEG quality 85, long side up to 1200 px): the user wants
+  a crop next to every field, also when a saved form is reopened.
+- ONLY WHILE A FORM IS NOT APPROVED: page previews (JPEG quality 85, up to 1600 px) and, inside record_json,
+  suggestions (plain-text readings of handwritten names - unverified personal data), alternatives and notes.
+  Approving the form deletes the page previews and strips suggestions/alternatives/notes; the final values, flag
+  codes and the reviewer's edits stay.
+- NEVER STORED: raw_texts (the model's readings of the text as written), the uploaded files themselves.
+- DB_STORE_CROPS=false stores no image at all (saved forms open without images, with a notice). DB_ENABLED=false turns
+  the database off.
+- Manual deletion only, each with a confirmation: per record (with its images), "delete images only" (values stay),
+  and delete-all. There is NO automatic deletion; do not add it unless the user asks.
 - SQLite is NOT encrypted at rest: it relies on disk encryption and access control of the machine.
 - Still no personal data in logs or the console; the database file is never committed, and tests use a temp DB.
 - Never commit sample files, output files or keys.

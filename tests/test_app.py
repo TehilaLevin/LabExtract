@@ -202,3 +202,48 @@ def test_saved_form_reopens_with_its_values_and_a_crop_next_to_every_field():
     assert not at.exception
     assert _input(at, "first_name").value == "יעל"
     assert len(at.image) >= len(FIELD_KEYS)  # a crop next to every field, plus the page image
+
+
+def _database_app():
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["screen"] = "database"
+    return at.run()
+
+
+def test_database_screen_delete_images_only_keeps_the_values():
+    from src import record_store
+
+    record_store.save_all(rs.new_session([_record(1), _record(2)]), "b1")
+    at = _database_app()
+    next(c for c in at.checkbox if c.key == "db_confirm_delete_images").check()
+    at.run()
+    next(b for b in at.button if b.key == "db_delete_images").click()
+    at.run()
+    assert not at.exception
+    assert record_store.counts()["total"] == 2
+    assert not record_store.load_batch("b1")[0].record.field_crops
+
+
+def test_database_screen_delete_one_record_removes_only_that_record():
+    from src import record_store
+
+    record_store.save_all(rs.new_session([_record(1), _record(2)]), "b1")
+    at = _database_app()
+    next(c for c in at.checkbox if c.key == "db_confirm_delete_one").check()
+    at.run()
+    next(b for b in at.button if b.key == "db_delete_one").click()
+    at.run()
+    assert not at.exception
+    assert record_store.counts()["total"] == 1
+
+
+def test_opening_a_record_saved_without_images_shows_a_notice(monkeypatch):
+    from src import config, record_store
+
+    monkeypatch.setattr(config, "DB_STORE_CROPS", False)
+    record_store.save_all(rs.new_session([_record(1)]), "b1")
+    at = _database_app()
+    next(b for b in at.button if b.key == "db_open").click()
+    at.run()
+    assert not at.exception
+    assert any("בלי תמונות" in w.value for w in at.warning)

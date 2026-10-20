@@ -92,10 +92,21 @@ measured on the samples may not carry over.
 5. **Database ("מאגר")** – every form is saved to a local SQLite file (`data/db/labextract.db`, `src/record_store.py`)
    when extracted (pending) and updated on every save / approval, so records survive closing the browser. The screen
    searches all fields, filters by status and sender, downloads the result as Excel (open flags of unapproved forms
-   in orange), opens a saved form on the review screen ("פתח") with the cropped image next to every field, and
-   deletes everything ("מחק את כל המאגר"). Stored: field values, metadata, status, reason codes of open flags, the
-   engine's record and the reviewer's edits, and the field crops and page previews (so a saved form can be reopened).
-   Not stored: the uploaded files. `DB_ENABLED=false` turns it off.
+   in orange) and opens a saved form on the review screen ("פתח").
+
+   | What | Stored | Removed |
+   |---|---|---|
+   | Field values, metadata, status, reason codes of open flags, the reviewer's edits | always | manual delete only |
+   | Field crops (JPEG, quality 85, long side up to 1200 px, a few tens to ~200 KB each) | yes, so a crop sits next to every field, also after approval and when a saved form is reopened | with the record |
+   | Page previews (JPEG, quality 85, up to 1600 px, a few hundred KB per page) | only while the form is **not approved** | **deleted when the form is approved** |
+   | Suggestions (plain-text readings of handwritten names, **unverified personal data**), alternatives, notes | only while the form is not approved | **stripped from the record when the form is approved** |
+   | Raw model readings (`raw_texts`) | **never** | – |
+   | The uploaded files | **never** | – |
+
+   Settings and buttons: `DB_STORE_CROPS=false` stores no image at all (saved forms then open without images, with a
+   notice); `DB_ENABLED=false` turns the database off. On the database screen, "מחק רשומה" deletes one record with its
+   images, "מחק תמונות בלבד" deletes every image and keeps the values, and "מחק את כל המאגר" deletes everything; each
+   needs a confirmation. Limitations: **nothing is deleted automatically**, and the file is **not encrypted at rest**.
 
 Privacy: uploads live only in the browser session's memory (`st.session_state`), never in a shared cache, a log
 or on disk; the pipeline's temp folder is deleted after every run. The one exception

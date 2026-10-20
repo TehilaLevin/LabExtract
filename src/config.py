@@ -96,6 +96,9 @@ OUTPUT_DIR = DATA_DIR / "output"
 # DB_ENABLED=false turns it off.
 DB_ENABLED = _env_flag("DB_ENABLED", True)
 DB_PATH = DATA_DIR / "db" / "labextract.db"
+# Whether the database keeps images (field crops, and page previews of forms not yet approved). false: no image
+# is stored and saved forms open without images.
+DB_STORE_CROPS = _env_flag("DB_STORE_CROPS", True)
 REFERENCE_DIR = DATA_DIR / "reference"
 SENDERS_PATH = REFERENCE_DIR / "approved_senders.json"
 PROMPT_PATH = BASE_DIR / "prompts" / "extraction_prompt.txt"

@@ -79,15 +79,6 @@ def test_empty_database_search_has_columns():
     assert frame.empty and "first_name" in frame.columns
 
 
-def test_no_images_or_suggestions_are_stored():
-    import sqlite3
-    store.save_review(_review(1), "b1")
-    conn = sqlite3.connect(store.config.DB_PATH)
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(forms)")}
-    conn.close()
-    assert not any(w in c for c in cols for w in ("image", "crop", "suggest", "note"))
-
-
 def _jpeg(colour="white"):
     from io import BytesIO
 
@@ -149,3 +140,104 @@ def test_database_from_before_the_images_is_upgraded_in_place():
     old.close()
     store.save_review(_review(1), "b1")
     assert store.counts()["total"] == 1 and len(store.load_batch("b1")) == 1
+
+
+# ---- what is stored, and when it is removed ---------------------------------------------------
+
+def _full_review(index=1):
+    """A form with a crop, two page previews and every reading aid, as the engine produces it."""
+    from src.field_crops import PagePreview, SourceCrop
+
+    review = _review(index, flags={"last_name": "name_unverified"}, last_name="")
+    rec = review.record
+    rec.suggestions["last_name"] = "ישראלי"
+    rec.alternatives["id_number"] = ["000000026"]
+    rec.notes["last_name"] = "כתב יד בראש הטופס"
+    rec.raw_texts["last_name"] = "ישר?לי"
+    rec.field_crops["last_name"] = [SourceCrop(1, (1, 2, 3, 4), _jpeg("red"))]
+    rec.page_images.extend([PagePreview(1, _jpeg()), PagePreview(2, _jpeg("gray"))])
+    return review
+
+
+def _image_kinds():
+    from src import config
+
+    with store._connect(config.DB_PATH) as conn:
+        return sorted(r[0] for r in conn.execute("SELECT kind FROM images"))
+
+
+def _record_json(form_id=1):
+    import json
+
+    from src import config
+
+    with store._connect(config.DB_PATH) as conn:
+        return json.loads(conn.execute("SELECT record_json FROM forms WHERE id = ?", (form_id,)).fetchone()[0])
+
+
+def test_pending_form_keeps_crops_page_previews_and_suggestions():
+    store.save_review(_full_review(), "b1")
+    assert _image_kinds() == ["crop", "page", "page"]
+    stored = _record_json()
+    assert stored["suggestions"] == {"last_name": "ישראלי"} and stored["alternatives"] and stored["notes"]
+
+
+def test_raw_texts_are_never_stored():
+    review = _full_review()
+    store.save_review(review, "b1")
+    review.approved = True
+    store.save_review(review, "b1")
+    assert "raw_texts" not in _record_json()
+    assert store.load_batch("b1")[0].record.raw_texts == {}
+
+
+def test_approval_deletes_page_previews_and_keeps_crops():
+    review = _full_review()
+    store.save_review(review, "b1")
+    review.approved = True
+    store.save_review(review, "b1")
+    assert _image_kinds() == ["crop"]
+    again = store.load_batch("b1")[0]
+    assert again.record.page_images == [] and len(again.record.field_crops["last_name"]) == 1
+
+
+def test_approval_strips_suggestions_alternatives_and_notes_but_keeps_values_flags_and_edits():
+    review = _full_review()
+    store.save_review(review, "b1")
+    review.edits["last_name"] = "ישראלי"
+    review.approved = True
+    store.save_review(review, "b1")
+    stored = _record_json()
+    assert stored["suggestions"] == {} and stored["alternatives"] == {} and stored["notes"] == {}
+    assert stored["flags"] == {"last_name": "name_unverified"} and stored["values"]["first_name"] == "ישראל"
+    again = store.load_batch("b1")[0]
+    assert again.value("last_name") == "ישראלי" and again.approved
+    assert store.search().iloc[0]["last_name"] == "ישראלי"
+
+
+def test_db_store_crops_false_stores_no_images(monkeypatch):
+    monkeypatch.setattr(store.config, "DB_STORE_CROPS", False)
+    store.save_review(_full_review(), "b1")
+    assert _image_kinds() == []
+    again = store.load_batch("b1")[0]
+    assert again.record.field_crops == {} and again.record.page_images == []
+    assert again.value("first_name") == "ישראל"          # the values are stored regardless
+
+
+def test_delete_images_only_keeps_the_values():
+    store.save_review(_full_review(1), "b1")
+    store.save_review(_full_review(2), "b1")
+    assert store.delete_images() == 6
+    assert _image_kinds() == []
+    assert store.counts()["total"] == 2
+    assert set(store.search()["first_name"]) == {"ישראל"}
+    assert len(store.load_batch("b1")) == 2
+
+
+def test_delete_one_record_removes_its_images_and_keeps_the_others():
+    store.save_review(_full_review(1), "b1")
+    store.save_review(_full_review(2), "b1")
+    first = int(store.search().sort_values("id").iloc[0]["id"])
+    assert store.delete([first]) == 1
+    assert store.counts()["total"] == 1
+    assert _image_kinds() == ["crop", "page", "page"]       # only the second form's images remain

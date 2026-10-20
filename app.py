@@ -894,6 +894,9 @@ def open_stored(batch_id: str, form_index: int) -> None:
     if not loaded:
         st.session_state.notice_error = "לא ניתן לפתוח את הרשומה: היא נשמרה לפני שהמאגר שמר גם את התמונות."
         return
+    if not any(r.record.field_crops for r in loaded):
+        st.session_state.notice_error = ("הרשומה נפתחה בלי תמונות: התמונות לא נשמרו במאגר או נמחקו. "
+                                         "אפשר לערוך ולאשר רק לפי הערכים.")
     st.session_state.reviews = loaded
     st.session_state.batch_id = batch_id
     st.session_state.uploader_n += 1
@@ -931,11 +934,11 @@ def screen_database() -> None:
     sender = sender_col.selectbox("גורם שולח", ["הכל", *known_senders], key="db_sender")
     status = {"אושר": record_store.STATUS_APPROVED, "לא אושר": record_store.STATUS_PENDING}.get(status_label)
     stored = record_store.search(text, status, None if sender == "הכל" else sender)
+    labels = {row.id: f"רשומה {row.id} · {row.first_name} {row.last_name} · {row.central_numbers} · "
+                      f"{row.source_file} עמ׳ {row.page_numbers}" for row in stored.itertuples()}
     if stored.empty:
         st.markdown('<div class="lx-empty">אין רשומות שמתאימות לחיפוש.</div>', unsafe_allow_html=True)
     else:
-        labels = {row.id: f"רשומה {row.id} · {row.first_name} {row.last_name} · {row.central_numbers} · "
-                          f"{row.source_file} עמ׳ {row.page_numbers}" for row in stored.itertuples()}
         pick_col, open_col = st.columns([4, 1], vertical_alignment="bottom")  # RTL: the picker on the right
         chosen = pick_col.selectbox("פתיחת רשומה לתיקון ואישור", list(labels), format_func=labels.get,
                                     key="db_pick")
@@ -963,7 +966,20 @@ def screen_database() -> None:
                            on_click="ignore", key="db_download", icon=":material/download:")
 
     with st.expander("מחיקה (המאגר מכיל פרטים אישיים)"):
-        st.markdown('<span class="lx-muted">מוחק לצמיתות מהדיסק. אין שחזור.</span>', unsafe_allow_html=True)
+        st.markdown('<span class="lx-muted">מוחק לצמיתות מהדיסק. אין שחזור, ואין מחיקה אוטומטית.</span>',
+                    unsafe_allow_html=True)
+        if not stored.empty:
+            del_pick = st.selectbox("רשומה למחיקה", list(labels), format_func=labels.get, key="db_del_pick")
+            del_ok = st.checkbox("אני מבין/ה – למחוק את הרשומה הזו עם התמונות שלה", key="db_confirm_delete_one")
+            if st.button("מחק רשומה", disabled=not del_ok, key="db_delete_one", icon=":material/delete:"):
+                record_store.delete([int(del_pick)])
+                st.session_state.notice = "הרשומה נמחקה מהמאגר."
+                st.rerun()
+        img_ok = st.checkbox("אני מבין/ה – למחוק את כל התמונות (הערכים נשארים)", key="db_confirm_delete_images")
+        if st.button("מחק תמונות בלבד", disabled=not img_ok, key="db_delete_images", icon=":material/hide_image:"):
+            n = record_store.delete_images()
+            st.session_state.notice = f"נמחקו {n} תמונות מהמאגר. הערכים נשמרו."
+            st.rerun()
         confirm = st.checkbox("אני מבין/ה – למחוק את כל הרשומות במאגר", key="db_confirm_delete")
         if st.button("מחק את כל המאגר", disabled=not confirm, key="db_delete_all", icon=":material/delete:"):
             n = record_store.delete_all()

@@ -4,13 +4,17 @@ One row per form, keyed by (batch_id, form_index), so saving the same form again
 saved as pending when extracted and updated when the reviewer saves or approves it, so the lab can search
 and filter what was approved and what still waits, across sessions.
 
-Stored: the 7 field values as the exporter would write them, the 3 metadata columns, the review status and
-the reason codes of the flags still open. So that a saved form can be opened again on the review screen
-with the cropped image next to every field (approved by the user), each row also keeps the engine's record
-(record_json: values, flags, confidences and the reading aids), the reviewer's edits, and - in the images
-table - the field crops and page previews. The file holds personal data: it lives in data/db/ (git-ignored),
-is opened by this process only, and `delete` / `delete_all` remove rows with their images.
-DB_ENABLED=false turns the store off.
+Stored (the file holds personal data: data/db/, git-ignored, opened by this process only, NOT encrypted):
+- the 7 field values as the exporter would write them, the 3 metadata columns, the review status, the reason
+  codes of the flags still open, and the reviewer's edits;
+- record_json: the engine's record without images and WITHOUT raw_texts (never stored). While a form is not
+  approved it also holds suggestions (plain-text readings of handwritten names, unverified), alternatives and
+  notes; approving the form strips all three, leaving the final values, flag codes and edits;
+- images (JPEG, quality 85): the field crops (up to 1200 px on the long side) of every form, so a crop sits
+  next to each field also after approval and when a saved form is reopened; and the page previews (up to
+  1600 px) of forms NOT approved yet - approving deletes them.
+DB_STORE_CROPS=false stores no image at all. DB_ENABLED=false turns the store off. Nothing is ever deleted
+automatically: `delete`, `delete_images` and `delete_all` are manual.
 """
 import json
 import sqlite3
@@ -64,6 +68,8 @@ CREATE INDEX IF NOT EXISTS idx_images_form ON images (form_id);
 # Columns added after the first release: added to an existing database file when it is opened.
 _ADDED_COLUMNS = {"record_json": "TEXT NOT NULL DEFAULT ''", "edits_json": "TEXT NOT NULL DEFAULT '{}'"}
 _IMAGE_FIELDS = ("field_crops", "page_images")
+_NEVER_STORED = ("raw_texts",)                           # model readings of the text as written
+_PENDING_ONLY = ("suggestions", "alternatives", "notes")  # reading aids: removed on approval
 
 
 def _connect(path=None) -> sqlite3.Connection:
@@ -92,7 +98,10 @@ def save_review(review, batch_id: str, path=None) -> None:
     now = _now()
     status = STATUS_APPROVED if review.approved else STATUS_PENDING
     flags = json.dumps(review.open_flags(), sort_keys=True)
-    record = {f.name: getattr(review.record, f.name) for f in fields(review.record) if f.name not in _IMAGE_FIELDS}
+    record = {f.name: getattr(review.record, f.name) for f in fields(review.record)
+              if f.name not in _IMAGE_FIELDS and f.name not in _NEVER_STORED}
+    if review.approved:
+        record.update({name: {} for name in _PENDING_ONLY})
     record_json = json.dumps(record, ensure_ascii=False, default=str)
     edits_json = json.dumps(review.edits, ensure_ascii=False)
     cols = ", ".join(_COLUMNS)
@@ -110,16 +119,21 @@ def save_review(review, batch_id: str, path=None) -> None:
              record_json, edits_json, *(values[c] for c in _COLUMNS)))
         form_id = conn.execute("SELECT id FROM forms WHERE batch_id = ? AND form_index = ?",
                                (batch_id, review.form_index)).fetchone()[0]
-        if not conn.execute("SELECT 1 FROM images WHERE form_id = ? LIMIT 1", (form_id,)).fetchone():
-            _insert_images(conn, form_id, review.record)
+        if review.approved:  # approved forms keep only their field crops
+            conn.execute("DELETE FROM images WHERE form_id = ? AND kind = 'page'", (form_id,))
+        if config.DB_STORE_CROPS:
+            _insert_images(conn, form_id, review.record, with_pages=not review.approved)
 
 
-def _insert_images(conn: sqlite3.Connection, form_id: int, record) -> None:
-    """The crops and page previews of a form: written once, the record never changes."""
+def _insert_images(conn: sqlite3.Connection, form_id: int, record, with_pages: bool) -> None:
+    """Crops (and, for forms not approved, page previews): each kind is written once, the record never changes."""
+    have = {row[0] for row in conn.execute("SELECT DISTINCT kind FROM images WHERE form_id = ?", (form_id,))}
     rows = []
-    for key, crops in record.field_crops.items():
-        rows += [(form_id, "crop", key, c.page, json.dumps(list(c.box)), i, c.jpeg) for i, c in enumerate(crops)]
-    rows += [(form_id, "page", None, p.page_number, None, i, p.jpeg) for i, p in enumerate(record.page_images)]
+    if "crop" not in have:
+        for key, crops in record.field_crops.items():
+            rows += [(form_id, "crop", key, c.page, json.dumps(list(c.box)), i, c.jpeg) for i, c in enumerate(crops)]
+    if with_pages and "page" not in have:
+        rows += [(form_id, "page", None, p.page_number, None, i, p.jpeg) for i, p in enumerate(record.page_images)]
     conn.executemany("INSERT INTO images (form_id, kind, field, page, box, seq, jpeg) VALUES (?, ?, ?, ?, ?, ?, ?)",
                      rows)
 
@@ -227,6 +241,12 @@ def delete(ids: list, path=None) -> int:
     with closing(_connect(path)) as conn, conn:
         cur = conn.execute(f"DELETE FROM forms WHERE id IN ({', '.join('?' for _ in ids)})", list(ids))
         return cur.rowcount
+
+
+def delete_images(path=None) -> int:
+    """Delete every stored image (crops and page previews); values, edits and status stay. Returns the count."""
+    with closing(_connect(path)) as conn, conn:
+        return conn.execute("DELETE FROM images").rowcount
 
 
 def delete_all(path=None) -> int:
