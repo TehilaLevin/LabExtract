@@ -197,7 +197,7 @@ div[class*="st-key-cardflag_"] {{
 /* Review screen: field cards, confidence chips, sticky action bar and form image. */
 div[class*="st-key-cardok_"] {{ background: #111829; }}
 div[class*="st-key-cardflag_"] {{ background: #1A1508 !important; }}
-div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 96px; object-fit: contain; background: #F4F2EC;
+div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 220px; object-fit: contain; background: #F4F2EC;
     border-radius: 8px; }}
 .lx-card-head {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; }}
 .lx-chip {{ font-size: 11px; font-weight: 600; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }}
@@ -477,24 +477,29 @@ def _field_card(review: rs.FormReview, key: str, senders: list, nonce: int) -> o
             title += f'<div class="flag-reason">⚠ {FLAG_REASONS.get(flag, flag)}</div>'
         st.markdown(title, unsafe_allow_html=True)
 
+        # Crop on one side, the editable value on the other: the reviewer compares them at a glance.
+        crop_col, input_col = st.columns([1, 1], gap="medium", vertical_alignment="center")
         crops = rec.field_crops.get(key, [])
-        for crop in crops:
-            caption = None
-            if len(rec.page_images) > 1 and crop.page <= len(rec.page_images):
-                caption = f"עמוד {rec.page_images[crop.page - 1].page_number}"
-            st.image(crop.jpeg, caption=caption, width="stretch")
-        if not crops and not rec.error:
-            st.caption("אין חיתוך מקור: המודל לא סימן היכן הערך מופיע בטופס.")
+        with crop_col:
+            for crop in crops:
+                caption = None
+                if len(rec.page_images) > 1 and crop.page <= len(rec.page_images):
+                    caption = f"עמוד {rec.page_images[crop.page - 1].page_number}"
+                st.image(crop.jpeg, caption=caption, width="stretch")
+            if not crops and not rec.error:
+                st.caption("אין חיתוך מקור: המודל לא סימן היכן הערך מופיע בטופס.")
 
-        input_key = f"in_{review.form_index}_{key}_{nonce}"
-        current = review.value(key)
-        if key == "sending_entity":
-            options = [""] + senders + ([current] if current and current not in senders else [])
-            value = st.selectbox(FIELD_HEADERS[key], options, index=options.index(current), key=input_key,
-                                 label_visibility="collapsed", format_func=lambda o: o or "— לא נבחר —")
-        else:
-            value = st.text_input(FIELD_HEADERS[key], value=current, key=input_key, label_visibility="collapsed",
-                                  placeholder="להקלדה מתוך התמונה" if rec.error else "ריק – להשלמה")
+        with input_col:
+            input_key = f"in_{review.form_index}_{key}_{nonce}"
+            current = review.value(key)
+            if key == "sending_entity":
+                options = [""] + senders + ([current] if current and current not in senders else [])
+                value = st.selectbox(FIELD_HEADERS[key], options, index=options.index(current), key=input_key,
+                                     label_visibility="collapsed", format_func=lambda o: o or "— לא נבחר —")
+            else:
+                value = st.text_input(FIELD_HEADERS[key], value=current, key=input_key,
+                                      label_visibility="collapsed",
+                                      placeholder="להקלדה מתוך התמונה" if rec.error else "ריק – להשלמה")
 
         suggestion = rec.suggestions.get(key)
         if suggestion and not review.value(key):
@@ -608,11 +613,8 @@ def screen_review(senders: list) -> None:
         # enter_to_submit=False: Enter in a field must never approve a form by accident.
         with st.form(key=f"fields_{rec.form_index}_{nonce}", border=False, enter_to_submit=False):
             entered = {}
-            for row in range(0, len(FIELD_KEYS), 2):
-                cols = st.columns(2)
-                for col, key in zip(cols, FIELD_KEYS[row:row + 2]):
-                    with col:
-                        entered[key] = _field_card(review, key, senders, nonce)
+            for key in FIELD_KEYS:  # one full-width card per field, so the crop is large enough to read
+                entered[key] = _field_card(review, key, senders, nonce)
             approve_clicked = save_clicked = reopen_clicked = False
             with st.container(key="actionbar", horizontal=True, vertical_alignment="center"):
                 if review.approved:
