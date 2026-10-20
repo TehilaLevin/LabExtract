@@ -10,6 +10,7 @@ data/temp/*
 data/output/*
 !data/output/.gitkeep
 data/dev_cache/
+data/db/
 
 # Handwriting experiment: photos of handwritten names and their labels (personal) - local only
 data/handwriting_test/*

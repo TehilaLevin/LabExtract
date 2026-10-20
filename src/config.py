@@ -92,6 +92,10 @@ DEV_CACHE_DIR = DATA_DIR / "dev_cache"
 TEMP_DIR = DATA_DIR / "temp"
 HIGHLIGHT_DEBUG_DIR = TEMP_DIR / "highlight_debug"
 OUTPUT_DIR = DATA_DIR / "output"
+# Local SQLite store of reviewed records (src/record_store.py). It holds personal data: git-ignored, local only.
+# DB_ENABLED=false turns it off.
+DB_ENABLED = _env_flag("DB_ENABLED", True)
+DB_PATH = DATA_DIR / "db" / "labextract.db"
 REFERENCE_DIR = DATA_DIR / "reference"
 SENDERS_PATH = REFERENCE_DIR / "approved_senders.json"
 PROMPT_PATH = BASE_DIR / "prompts" / "extraction_prompt.txt"

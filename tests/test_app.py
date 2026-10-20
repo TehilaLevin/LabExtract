@@ -161,3 +161,27 @@ def test_export_open_button_jumps_to_the_unapproved_form():
     assert [b.key for b in at.button if b.key.startswith("open_")] == ["open_1"]
     at.button(key="open_1").click().run()
     assert at.session_state["screen"] == "review" and at.session_state["pos"] == 1
+
+
+def test_approving_a_form_saves_it_to_the_database():
+    from src import record_store
+
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["reviews"] = rs.new_session([_record(1), _record(2)])
+    at.session_state["batch_id"] = "b1"
+    at.session_state["screen"] = "review"
+    at.session_state["pos"] = 0
+    at.run()
+    next(b for b in at.button if b.key == "approve").click()
+    at.run()
+    assert not at.exception
+    assert record_store.counts() == {"total": 1, "approved": 1, "pending": 0}
+    at.session_state["screen"] = "database"
+    assert not at.run().exception
+
+
+def test_database_screen_opens_without_results():
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["screen"] = "database"
+    at.run()
+    assert not at.exception

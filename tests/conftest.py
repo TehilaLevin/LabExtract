@@ -5,6 +5,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _temp_database(monkeypatch, tmp_path):
+    """Tests never touch the real data/db/labextract.db."""
+    from src import config
+
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "db" / "test.db")
+
+
+@pytest.fixture(autouse=True)
 def _wide_received_date_window(monkeypatch):
     """Fixtures use June 2026 sample dates with "today" in October; the 90-day production window would flag
     them all. Tests of the window itself (test_strict_validation.py) set it explicitly."""

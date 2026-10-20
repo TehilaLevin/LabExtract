@@ -23,6 +23,7 @@ Streamlit limits and how they are handled:
   "approve form" has to move to the next form.
 """
 import threading
+import uuid
 import time
 from datetime import date
 
@@ -30,6 +31,7 @@ import pandas as pd
 import streamlit as st
 
 from src import config
+from src import record_store
 from src import review_session as rs
 from src.constants import (
     ALL_HEADERS,
@@ -51,7 +53,7 @@ from src.validators import list_approved_senders
 
 st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide", initial_sidebar_state="expanded")
 
-SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירה", "export": "ייצוא"}
+SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירה", "export": "ייצוא", "database": "מאגר"}
 APPROVED_COLOR = "#5EEAD4"  # mint: actions and approvals ("control room" design, see .streamlit/config.toml)
 PIPELINE_STEPS = (
     ("פיצול לטפסים", "כל עמוד: טופס חדש או המשך של הקודם"),
@@ -247,7 +249,7 @@ div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 220px; obje
 
 def init_state() -> None:
     defaults = {"screen": "upload", "reviews": None, "pos": 0, "uploader_n": 0, "nonce": 0,
-                "pending": None, "notice": None, "run_error": None}
+                "pending": None, "notice": None, "run_error": None, "batch_id": None, "notice_error": None}
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
 
@@ -269,6 +271,16 @@ def clear_all() -> None:
 
 def reviews() -> list:
     return st.session_state.reviews or []
+
+
+def persist(items: list) -> None:
+    """Save forms to the local SQLite store (a failure warns, never loses the in-memory review)."""
+    if not config.DB_ENABLED or not items:
+        return
+    try:
+        record_store.save_all(items, st.session_state.batch_id)
+    except Exception as exc:  # sqlite3.Error, a locked or read-only file...
+        st.session_state.notice_error = f"השמירה במאגר נכשלה ({type(exc).__name__}). הסקירה בזיכרון לא נפגעה."
 
 
 def config_problem():
@@ -342,6 +354,8 @@ def run_extraction(files: list, progress_slot, steps_slot) -> None:
         st.session_state.run_error = outcome["error"]
         return
     st.session_state.reviews = rs.new_session(outcome["records"])
+    st.session_state.batch_id = uuid.uuid4().hex
+    persist(st.session_state.reviews)
     st.session_state.run_error = None
     go("summary", 0)
     st.rerun()
@@ -629,6 +643,7 @@ def screen_review(senders: list) -> None:
 
         if approve_clicked:
             result = rs.approve(review, entered)
+            persist([review])
             if result.approved:
                 _after_approval(pos, result.empty)
             else:
@@ -638,11 +653,13 @@ def screen_review(senders: list) -> None:
         if save_clicked:
             rs.save_edits(review, entered)
             rs.reopen(review)
+            persist([review])
             st.session_state.notice = "התיקונים נשמרו. הטופס עדיין לא אושר."
             st.session_state.nonce += 1
             st.rerun()
         if reopen_clicked:
             rs.reopen(review)
+            persist([review])
             st.session_state.nonce += 1
             st.rerun()
 
@@ -652,6 +669,7 @@ def screen_review(senders: list) -> None:
                        "(למשל מספר דרכון):\n" + _warning_lines(pending["warnings"]), icon=":material/warning:")
             if st.button("אשר בכל זאת", key="force_approve"):
                 result = rs.approve(review, {}, force=True)
+                persist([review])
                 _after_approval(pos, result.empty)
                 st.rerun()
 
@@ -726,6 +744,61 @@ def screen_export() -> None:
     st.dataframe(view.style.apply(colour, axis=None), hide_index=True, column_config=widths)
 
 
+def screen_database() -> None:
+    st.markdown('<p class="lx-kicker">מאגר · שמירה מקומית</p><h1 class="lx-h1">מאגר הרשומות</h1>'
+                '<p class="lx-lead">כל טופס שחולץ נשמר כאן – ממתין לאישור או מאושר – וזמין גם אחרי סגירת '
+                'הדפדפן. חפשו, סננו והורידו.</p>', unsafe_allow_html=True)
+    if not config.DB_ENABLED:
+        st.info("המאגר כבוי (DB_ENABLED=false).")
+        return
+    try:
+        total = record_store.counts()
+        known_senders = record_store.senders()
+    except Exception as exc:
+        st.error(f"לא ניתן לפתוח את המאגר ({type(exc).__name__}).")
+        return
+    st.markdown(f"""
+<div class="lx-tiles">
+  <div class="lx-tile"><div class="lx-tile-label">טפסים במאגר</div><div class="lx-tile-value">{total["total"]}</div></div>
+  <div class="lx-tile ok"><div class="lx-tile-label">אושרו</div><div class="lx-tile-value">{total["approved"]}</div></div>
+  <div class="lx-tile flag"><div class="lx-tile-label">ממתינים</div><div class="lx-tile-value">{total["pending"]}</div></div>
+</div>""", unsafe_allow_html=True)
+
+    text_col, status_col, sender_col = st.columns([3, 2, 2])
+    text = text_col.text_input("חיפוש חופשי", placeholder="שם, ת״ז, מספר מרכזי, מספר התחייבות…", key="db_text")
+    status_label = status_col.selectbox("סטטוס", ["הכל", "אושר", "לא אושר"], key="db_status")
+    sender = sender_col.selectbox("גורם שולח", ["הכל", *known_senders], key="db_sender")
+    status = {"אושר": record_store.STATUS_APPROVED, "לא אושר": record_store.STATUS_PENDING}.get(status_label)
+    stored = record_store.search(text, status, None if sender == "הכל" else sender)
+    if stored.empty:
+        st.markdown('<div class="lx-empty">אין רשומות שמתאימות לחיפוש.</div>', unsafe_allow_html=True)
+    else:
+        frame, highlight = record_store.export_frame(stored)
+        headers = {**ALL_HEADERS, REVIEW_STATUS_KEY: REVIEW_STATUS_HEADER}
+        view = _rtl_columns(frame.rename(columns=headers))
+
+        def colour(df):  # same orange rule as the review: an open flag of a form not yet approved
+            cols = list(frame.columns)
+            out = pd.DataFrame("", index=df.index, columns=df.columns)
+            for row, key in highlight:
+                out.iloc[row, cols.index(key)] = f"background-color: {FLAG_COLOR}; color: #1A1100; font-weight: 600"
+            return out
+
+        st.dataframe(view.style.apply(colour, axis=None), hide_index=True)
+        st.download_button("הורד את התוצאות כ-Excel", data=to_xlsx_bytes(frame, highlight),
+                           file_name=f"labextract_db_{date.today():%Y-%m-%d}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           on_click="ignore", key="db_download", icon=":material/download:")
+
+    with st.expander("מחיקה (המאגר מכיל פרטים אישיים)"):
+        st.markdown('<span class="lx-muted">מוחק לצמיתות מהדיסק. אין שחזור.</span>', unsafe_allow_html=True)
+        confirm = st.checkbox("אני מבין/ה – למחוק את כל הרשומות במאגר", key="db_confirm_delete")
+        if st.button("מחק את כל המאגר", disabled=not confirm, key="db_delete_all", icon=":material/delete:"):
+            n = record_store.delete_all()
+            st.session_state.notice = f"נמחקו {n} רשומות מהמאגר."
+            st.rerun()
+
+
 # ------------------------------------------------------------------ main
 
 def _sidebar_css(items: list, screen: str, pos: int) -> str:
@@ -760,7 +833,7 @@ def sidebar(has_results: bool) -> None:
         st.markdown(BRAND_HTML + _sidebar_css(items, st.session_state.screen, st.session_state.pos),
                     unsafe_allow_html=True)
         for screen, label in SCREENS.items():
-            st.button(label, key=f"nav_{screen}", type="tertiary", disabled=not has_results and screen != "upload",
+            st.button(label, key=f"nav_{screen}", type="tertiary", disabled=not has_results and screen not in ("upload", "database"),
                       on_click=go, args=(screen,), width="stretch")
         approved = len(items) - len(rs.unapproved(items))
         st.markdown(f'<div class="lx-section" style="display:flex;justify-content:space-between">'
@@ -787,7 +860,7 @@ def main() -> None:
         st.error(DEV_CACHE_BANNER, icon="⚠️")
 
     has_results = bool(reviews())
-    if not has_results:
+    if not has_results and st.session_state.screen != "database":
         st.session_state.screen = "upload"
     sidebar(has_results)
 
@@ -795,8 +868,14 @@ def main() -> None:
         st.success(st.session_state.notice)
         st.session_state.notice = None
 
+    if st.session_state.notice_error:
+        st.warning(st.session_state.notice_error)
+        st.session_state.notice_error = None
+
     screen = st.session_state.screen
-    if screen == "summary":
+    if screen == "database":
+        screen_database()
+    elif screen == "summary":
         screen_summary()
     elif screen == "review":
         screen_review(list_approved_senders(config.SENDERS_PATH))
