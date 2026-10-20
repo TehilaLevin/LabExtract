@@ -355,7 +355,7 @@ def screen_header(step: int, name: str, title: str, lead: str) -> None:
 
 
 def screen_upload() -> None:
-    screen_header(1, "העלאה", "קליטת אצווה של טפסי התחייבות",
+    screen_header(1, "העלאה", "קליטת טפסי התחייבות",
                   "גררו את כל הטפסים של היום – סריקות, צילומי טלפון או PDF מרובה עמודים. המערכת מפצלת לטפסים, "
                   "מזהה את הגורם השולח ומחלצת את השדות. כל שדה לא ודאי יסומן בכתום לבדיקה שלכם.")
     problem = config_problem()
@@ -762,8 +762,8 @@ def sidebar(has_results: bool) -> None:
                       on_click=go, args=(screen,), width="stretch")
         approved = len(items) - len(rs.unapproved(items))
         st.markdown(f'<div class="lx-section" style="display:flex;justify-content:space-between">'
-                    f'<span>טפסים באצווה</span><span dir="ltr">{approved} / {len(items)}</span></div>'
-                    if items else '<div class="lx-section">טפסים באצווה</div>', unsafe_allow_html=True)
+                    f'<span>טפסים שהועלו</span><span dir="ltr">{approved} / {len(items)}</span></div>'
+                    if items else '<div class="lx-section">טפסים שהועלו</div>', unsafe_allow_html=True)
         if not items:
             st.markdown('<div class="lx-empty">עדיין אין טפסים.<br>הטפסים יופיעו כאן אחרי החילוץ.</div>'
                         + PRIVACY_NOTE, unsafe_allow_html=True)
