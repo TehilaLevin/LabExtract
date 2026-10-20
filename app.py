@@ -157,7 +157,7 @@ div[class*="st-key-cardflag_"] {{
 
 /* Sidebar: brand, step navigation, batch list. */
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 4px; }}
-.lx-brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }}
+.lx-brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 40px; }}
 .lx-lab-logo {{ width: 56px; height: 56px; flex: none; }}
 .lx-partner {{ display: flex; flex-direction: column; gap: 10px; border-top: 1px solid #E3E2EE; padding-top: 18px;
     margin-top: 48px; font-size: 14px; font-weight: 600; color: #1B1A6B; }}
