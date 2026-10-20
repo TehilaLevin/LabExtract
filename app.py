@@ -25,12 +25,16 @@ Streamlit limits and how they are handled:
 import threading
 import uuid
 import time
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
 
+import altair as alt
+
+from src import achievements as achv
 from src import config
+from src import overview
 from src import record_store
 from src import review_session as rs
 from src.constants import (
@@ -249,7 +253,8 @@ div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 220px; obje
 
 def init_state() -> None:
     defaults = {"screen": "upload", "reviews": None, "pos": 0, "uploader_n": 0, "nonce": 0,
-                "pending": None, "notice": None, "run_error": None, "batch_id": None, "notice_error": None}
+                "pending": None, "notice": None, "run_error": None, "batch_id": None, "notice_error": None,
+                "toasts": [], "ach_unlocked": {}, "ach_processed": 0}
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
 
@@ -356,9 +361,109 @@ def run_extraction(files: list, progress_slot, steps_slot) -> None:
     st.session_state.reviews = rs.new_session(outcome["records"])
     st.session_state.batch_id = uuid.uuid4().hex
     persist(st.session_state.reviews)
+    award(new_forms=sum(1 for r in st.session_state.reviews if not r.record.error), batch_finished=True)
     st.session_state.run_error = None
     go("summary", 0)
     st.rerun()
+
+
+# ------------------------------------------------------------------ achievements
+
+def award(new_forms: int = 0, batch_finished: bool = False, hour=None) -> None:
+    """Re-check the achievements after an event and queue a toast for each one unlocked for the first time.
+
+    Unlocked ids are persisted (SQLite, or session_state when DB_ENABLED=false), so a rerun or a refresh
+    never announces one twice. A failure here never interrupts the review.
+    """
+    items = reviews()
+    try:
+        if config.DB_ENABLED:
+            total = achv.add_processed(new_forms) if new_forms else achv.processed_total()
+            counts = record_store.sender_counts()
+        else:
+            st.session_state.ach_processed += new_forms
+            total = st.session_state.ach_processed
+            counts = overview.counts_from_values(r.value("sending_entity") for r in items)
+        stats = achv.Stats(processed_total=total, batch_size=len(items),
+                           batch_approved=len(items) - len(rs.unapproved(items)), batch_finished=batch_finished,
+                           known_senders=overview.known_sender_count(overview.breakdown(counts)), hour=hour)
+        earned = achv.evaluate(stats)
+        if config.DB_ENABLED:
+            new = achv.unlock(earned)
+        else:
+            known = st.session_state.ach_unlocked
+            new = [a.id for a in achv.ACHIEVEMENTS if a.id in earned and a.id not in known]
+            known.update({i: "" for i in new})
+    except Exception:  # sqlite3.Error etc.: achievements are decoration, never block the work
+        return
+    st.session_state.toasts += new
+
+
+def show_toasts() -> None:
+    queued, st.session_state.toasts = st.session_state.toasts, []
+    for id_ in queued:
+        st.toast(f"הישג חדש: {achv.BY_ID[id_].title}", icon=":material/workspace_premium:")
+
+
+def achievements_panel() -> None:
+    try:
+        done = achv.unlocked() if config.DB_ENABLED else dict(st.session_state.ach_unlocked)
+    except Exception:
+        return
+    with st.expander(f"הישגים ({len(done)}/{len(achv.ACHIEVEMENTS)})", icon=":material/workspace_premium:"):
+        for a in achv.ACHIEVEMENTS:
+            if a.id in done:
+                when = f" · {done[a.id][:10]}" if done[a.id] else ""
+                st.markdown(f'<div style="margin-bottom:8px"><strong style="color:{APPROVED_COLOR}">✓ {a.title}</strong>'
+                            f'<div class="lx-muted">{a.description}{when}</div></div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div style="margin-bottom:8px;opacity:.55"><strong>{"הישג מוסתר" if a.hidden else a.title}'
+                            f'</strong><div class="lx-muted">{"???" if a.hidden else a.description}</div></div>',
+                            unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------------ activity overview
+
+OVERVIEW_COLORS = {overview.KIND_LABELS[overview.KIND_HMO]: APPROVED_COLOR,
+                   overview.KIND_LABELS[overview.KIND_HOSPITAL]: "#7AA2F7",
+                   overview.KIND_LABELS[overview.KIND_OTHER]: "#93A0BC",
+                   overview.KIND_LABELS[overview.KIND_UNKNOWN]: "#5B6685"}
+
+
+def overview_section(counts: dict) -> None:
+    """Forms per sending entity, from the stored records: tiles by kind and a hover bar chart.
+
+    Hospitals have a city but no coordinates in the approved list, so this is a chart, not a map (no
+    location is guessed). Orange is not used: it is reserved for fields that need review.
+    """
+    st.markdown('<div class="lx-fields-head" style="margin-top:8px"><strong style="font-size:18px">'
+                'סקירת פעילות לפי גורם שולח</strong></div>', unsafe_allow_html=True)
+    rows = overview.breakdown(counts)
+    if not rows:
+        st.markdown('<div class="lx-empty">עדיין אין נתונים להצגה.</div>', unsafe_allow_html=True)
+        return
+    kinds = overview.totals_by_kind(rows)
+    tiles = "".join(
+        f'<div class="lx-tile"><div class="lx-tile-label">{overview.KIND_LABELS[k]}</div>'
+        f'<div class="lx-tile-value">{kinds[k]["count"]}'
+        f'<span class="lx-muted" style="font-size:14px"> · {kinds[k]["percent"]}%</span></div></div>'
+        for k in overview.KIND_LABELS if kinds[k]["count"])
+    st.markdown(f'<div class="lx-tiles">{tiles}</div>', unsafe_allow_html=True)
+    frame = pd.DataFrame(rows)
+    hover = alt.selection_point(fields=["name"], on="pointerover", clear="pointerout")
+    chart = (alt.Chart(frame).mark_bar(cornerRadiusEnd=4, size=16)
+             .encode(x=alt.X("count:Q", title="מספר טפסים", axis=alt.Axis(tickMinStep=1, format="d")),
+                     y=alt.Y("name:N", sort=None, title=None),
+                     color=alt.Color("kind_label:N", title="סוג",
+                                     scale=alt.Scale(domain=list(OVERVIEW_COLORS), range=list(OVERVIEW_COLORS.values()))),
+                     opacity=alt.condition(hover, alt.value(1), alt.value(0.6)),
+                     tooltip=[alt.Tooltip("name:N", title="גורם"), alt.Tooltip("kind_label:N", title="סוג"),
+                              alt.Tooltip("count:Q", title="טפסים"), alt.Tooltip("percent:Q", title="אחוז מהסך", format=".1f")])
+             .add_params(hover).properties(height=max(120, 28 * len(frame))))
+    st.altair_chart(chart, width="stretch")
+    with st.expander("תצוגת טבלה"):
+        table = frame.rename(columns={"name": "גורם", "kind_label": "סוג", "count": "טפסים", "percent": "אחוז"})
+        st.dataframe(table[["גורם", "סוג", "טפסים", "אחוז"]], hide_index=True)
 
 
 # ------------------------------------------------------------------ screens
@@ -540,6 +645,7 @@ def _warning_lines(warnings: dict) -> str:
 
 
 def _after_approval(pos: int, empty: list) -> None:
+    award(hour=datetime.now().hour)
     items = reviews()
     note = f"טופס {pos + 1} אושר."
     if empty:
@@ -764,6 +870,11 @@ def screen_database() -> None:
   <div class="lx-tile flag"><div class="lx-tile-label">ממתינים</div><div class="lx-tile-value">{total["pending"]}</div></div>
 </div>""", unsafe_allow_html=True)
 
+    try:
+        overview_section(record_store.sender_counts())
+    except Exception as exc:
+        st.warning(f"הסקירה לא זמינה ({type(exc).__name__}).")
+
     text_col, status_col, sender_col = st.columns([3, 2, 2])
     text = text_col.text_input("חיפוש חופשי", placeholder="שם, ת״ז, מספר מרכזי, מספר התחייבות…", key="db_text")
     status_label = status_col.selectbox("סטטוס", ["הכל", "אושר", "לא אושר"], key="db_status")
@@ -835,6 +946,7 @@ def sidebar(has_results: bool) -> None:
         for screen, label in SCREENS.items():
             st.button(label, key=f"nav_{screen}", type="tertiary", disabled=not has_results and screen not in ("upload", "database"),
                       on_click=go, args=(screen,), width="stretch")
+        achievements_panel()
         approved = len(items) - len(rs.unapproved(items))
         st.markdown(f'<div class="lx-section" style="display:flex;justify-content:space-between">'
                     f'<span>טפסים שהועלו</span><span dir="ltr">{approved} / {len(items)}</span></div>'
@@ -864,6 +976,7 @@ def main() -> None:
         st.session_state.screen = "upload"
     sidebar(has_results)
 
+    show_toasts()
     if st.session_state.notice:
         st.success(st.session_state.notice)
         st.session_state.notice = None

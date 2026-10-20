@@ -127,6 +127,13 @@ def senders(path=None) -> list:
             "SELECT DISTINCT sending_entity FROM forms WHERE sending_entity != '' ORDER BY sending_entity")]
 
 
+def sender_counts(path=None) -> dict:
+    """{sending_entity: number of stored forms}; forms without a sender are counted under ""."""
+    with closing(_connect(path)) as conn:
+        return {row[0]: row[1] for row in conn.execute(
+            "SELECT sending_entity, COUNT(*) FROM forms GROUP BY sending_entity")}
+
+
 def export_frame(stored: pd.DataFrame) -> tuple:
     """(DataFrame, highlight) for excel_exporter from a `search` result: same as the review export (one row per
     commitment; the database itself stays one row per form);
