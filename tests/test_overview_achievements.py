@@ -41,6 +41,11 @@ def test_sender_counts_from_the_database():
     assert overview.known_sender_count(overview.breakdown(store.sender_counts())) == 2
 
 
+def test_sender_counts_approved_only():
+    store.save_all([_review(1, sender="מכבי"), _review(2, sender="כללית")], "b1")
+    assert store.sender_counts(approved_only=True) == {}
+
+
 # ------------------------------------------------------------------ achievements
 
 def test_conditions_are_only_met_when_true():
@@ -51,6 +56,8 @@ def test_conditions_are_only_met_when_true():
     assert "batch_complete" not in achv.evaluate(achv.Stats(batch_size=3, batch_finished=False))
     assert "review_complete" not in achv.evaluate(achv.Stats(batch_size=3, batch_approved=2))
     assert "review_complete" in achv.evaluate(achv.Stats(batch_size=3, batch_approved=3))
+    assert "review_complete" in achv.evaluate(achv.Stats(batch_size=1, batch_approved=1))
+    assert "review_complete" not in achv.evaluate(achv.Stats(batch_size=0, batch_approved=0))
     assert "century_club" not in achv.evaluate(achv.Stats(processed_total=99))
     assert {"century_club"} <= achv.evaluate(achv.Stats(processed_total=100))
     assert {"five_hundred", "thousand"} <= achv.evaluate(achv.Stats(processed_total=1000))

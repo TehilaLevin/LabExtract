@@ -64,7 +64,7 @@ def evaluate(stats: Stats) -> set:
         earned.add("first_form")
     if stats.batch_finished and stats.batch_size >= BATCH_MIN_FORMS:
         earned.add("batch_complete")
-    if stats.batch_size >= BATCH_MIN_FORMS and stats.batch_approved == stats.batch_size:
+    if stats.batch_size >= 1 and stats.batch_approved == stats.batch_size:
         earned.add("review_complete")
     if stats.known_senders >= SENDERS_GOAL:
         earned.add("wide_reach")

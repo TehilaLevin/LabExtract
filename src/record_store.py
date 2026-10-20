@@ -212,11 +212,16 @@ def senders(path=None) -> list:
             "SELECT DISTINCT sending_entity FROM forms WHERE sending_entity != '' ORDER BY sending_entity")]
 
 
-def sender_counts(path=None) -> dict:
-    """{sending_entity: number of stored forms}; forms without a sender are counted under ""."""
+def sender_counts(path=None, approved_only: bool = False) -> dict:
+    """{sending_entity: number of stored forms}; forms without a sender are counted under "".
+
+    approved_only=True counts only forms the reviewer approved (used by the activity overview).
+    """
+    where = "WHERE status = ? " if approved_only else ""
+    args = (STATUS_APPROVED,) if approved_only else ()
     with closing(_connect(path)) as conn:
         return {row[0]: row[1] for row in conn.execute(
-            "SELECT sending_entity, COUNT(*) FROM forms GROUP BY sending_entity")}
+            f"SELECT sending_entity, COUNT(*) FROM forms {where}GROUP BY sending_entity", args)}
 
 
 def export_frame(stored: pd.DataFrame) -> tuple:
