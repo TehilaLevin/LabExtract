@@ -84,7 +84,8 @@ measured on the samples may not carry over.
    filled in: the reading is shown as "הצעה – לא מאומת" for the reviewer to copy in only if it is right. The sender
    is chosen from the closed list. "אשר טופס ועבור לבא" re-validates the form: a value that still fails validation
    (ID check digit, date, sender) needs an explicit "אשר בכל זאת"; empty fields are reported, never blocking.
-4. **Export** – Excel with Hebrew headers, right-to-left sheet, one row per form and a review-status column.
+4. **Export** – Excel with Hebrew headers, right-to-left sheet, **one row per commitment number** (single-value fields repeat on each row; all central numbers
+   of the form share one cell; a form without a commitment number still gives one row, flagged) and a review-status column.
    Flagged cells of forms that were not approved are orange; exporting while forms are unapproved shows them
    and needs a confirmation.
 
@@ -119,6 +120,17 @@ typing does not rerun the script; saved values are kept in `src/review_session.p
   draft-labelled forms Opus 5.5 with thinking (no crops) got 69/105 fields right with 0 silent errors; names were
   the weak field (1/15).
 - Earlier baseline: Gemini 3.6 Flash scored 29/35 on 5 forms; replaced by Claude for accuracy and privacy.
+
+## What the lab needs in order to adopt it
+
+- **A retention and automatic-deletion policy.** The database (`data/db/labextract.db`) keeps patient data until
+  someone deletes it manually with "מחק את כל המאגר"; there is no automatic deletion. Real use requires the lab to
+  define how long records may be kept and to automate their deletion.
+- **Disk encryption.** SQLite is not encrypted at rest; the machine's disk must be encrypted and access to the
+  folder restricted.
+- An Anthropic API key and an agreement that form images may be sent to the model provider.
+- Verification of the approved-senders list and a ground-truth set labelled on real forms.
+- Replacing the local file with the lab's own system (API or database) for production.
 
 ## Development cache (`DEV_CACHE`) – development only
 

@@ -18,6 +18,7 @@ from typing import Optional
 import pandas as pd
 
 from src import config
+from src.excel_exporter import expand_per_commitment
 from src.constants import (
     FIELD_KEYS,
     METADATA_KEYS,
@@ -127,7 +128,8 @@ def senders(path=None) -> list:
 
 
 def export_frame(stored: pd.DataFrame) -> tuple:
-    """(DataFrame, highlight) for excel_exporter from a `search` result: same columns as the review export;
+    """(DataFrame, highlight) for excel_exporter from a `search` result: same as the review export (one row per
+    commitment; the database itself stays one row per form);
     flagged fields of forms not yet approved are highlighted."""
     frame = stored[[*FIELD_KEYS, *METADATA_KEYS]].copy()
     frame[REVIEW_STATUS_KEY] = stored["status"].map(
@@ -138,7 +140,7 @@ def export_frame(stored: pd.DataFrame) -> tuple:
         if status != STATUS_APPROVED:
             highlight |= {(pos, key) for key in flags}
             highlight.add((pos, REVIEW_STATUS_KEY))
-    return frame, highlight
+    return expand_per_commitment(frame, highlight)
 
 
 def delete(ids: list, path=None) -> int:

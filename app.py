@@ -680,7 +680,7 @@ def screen_export() -> None:
     waiting = rs.unapproved(items)
     file_name = f"labextract_{date.today():%Y-%m-%d}.xlsx"
     screen_header(4, "ייצוא", "ייצוא לאקסל" if waiting else "הקובץ מוכן להורדה",
-                  "שורה לכל טופס, עמודה לכל שדה, כותרות בעברית וגיליון מימין לשמאל. "
+                  "שורה לכל מספר התחייבות, עמודה לכל שדה, כותרות בעברית וגיליון מימין לשמאל. "
                   "שדות שעדיין לא נבדקו מסומנים בכתום גם בקובץ.")
 
     download_col, status_col = st.columns(2, gap="medium")  # RTL: the download card is on the right

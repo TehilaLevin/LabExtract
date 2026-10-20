@@ -10,13 +10,42 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from src.constants import ALL_HEADERS, FLAG_COLOR, REVIEW_STATUS_HEADER, REVIEW_STATUS_KEY
+from src.constants import (
+    ALL_HEADERS,
+    FLAG_COLOR,
+        REVIEW_STATUS_APPROVED,
+    REVIEW_STATUS_HEADER,
+    REVIEW_STATUS_KEY,
+)
+from src.validators import normalize_number_list
 
 SHEET_TITLE = "התחייבויות"
 HEADERS = {**ALL_HEADERS, REVIEW_STATUS_KEY: REVIEW_STATUS_HEADER}
 MIN_WIDTH = 8
 MAX_WIDTH = 60
 _FILL = PatternFill(fill_type="solid", start_color=FLAG_COLOR.lstrip("#"), end_color=FLAG_COLOR.lstrip("#"))
+
+
+def expand_per_commitment(frame: pd.DataFrame, highlight: Optional[Iterable] = None) -> tuple:
+    """(frame, highlight) with ONE ROW PER COMMITMENT number, as the challenge requires.
+
+    Single-value fields, metadata and the review status repeat on every row; all central numbers of the form
+    stay together in one cell (joined with ", "). A form without a commitment number still gives one row, with
+    an empty commitment cell that is flagged (orange) while the form is not approved. Highlights follow their
+    form to every one of its rows.
+    """
+    highlight = set(highlight or ())
+    rows, new_highlight = [], set()
+    for pos, record in enumerate(frame.to_dict("records")):
+        raw = record.get("commitment_numbers")
+        numbers = normalize_number_list(raw if isinstance(raw, (str, list, tuple)) else None) or [""]
+        flagged = {key for row, key in highlight if row == pos}
+        if not numbers[0] and record.get(REVIEW_STATUS_KEY) != REVIEW_STATUS_APPROVED:
+            flagged.add("commitment_numbers")
+        for number in numbers:
+            new_highlight |= {(len(rows), key) for key in flagged}
+            rows.append({**record, "commitment_numbers": number})
+    return pd.DataFrame(rows, columns=frame.columns), new_highlight
 
 
 def to_xlsx_bytes(df: pd.DataFrame, highlight: Optional[Iterable] = None) -> bytes:
