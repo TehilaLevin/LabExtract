@@ -185,3 +185,20 @@ def test_database_screen_opens_without_results():
     at.session_state["screen"] = "database"
     at.run()
     assert not at.exception
+
+
+def test_saved_form_reopens_with_its_values_and_a_crop_next_to_every_field():
+    from src import record_store
+
+    reviews = rs.new_session([_record(1), _record(2)])
+    rs.approve(reviews[1], {"first_name": "יעל"})
+    record_store.save_all(reviews, "b1")
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["reviews"] = record_store.load_batch("b1")
+    at.session_state["batch_id"] = "b1"
+    at.session_state["screen"] = "review"
+    at.session_state["pos"] = 1
+    at.run()
+    assert not at.exception
+    assert _input(at, "first_name").value == "יעל"
+    assert len(at.image) >= len(FIELD_KEYS)  # a crop next to every field, plus the page image
