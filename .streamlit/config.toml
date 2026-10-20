@@ -11,25 +11,26 @@ gatherUsageStats = false
 # Hide the developer toolbar (Deploy button) in the lab.
 toolbarMode = "minimal"
 
-# Light, institutional design in the colours of the partner logos: Ministry of Health navy (#183060) for
-# text, Central Virology Laboratory blue (#0077A8) for actions, green for approvals, and orange
+# Light design that follows the lab's page on the Sheba web site: deep indigo (#1B1A6B) for text and
+# buttons, Sheba pink (#C8306F) and teal for highlights and approvals, pill buttons, and orange
 # (#FFA500, constants.FLAG_COLOR) reserved for fields that need review.
 [theme]
 base = "light"
-primaryColor = "#0077A8"
-backgroundColor = "#F4F7FA"
-secondaryBackgroundColor = "#EEF3F8"
-textColor = "#1B2A41"
-linkColor = "#0077A8"
-borderColor = "#DCE4EC"
+primaryColor = "#1B1A6B"
+backgroundColor = "#F7F7FB"
+secondaryBackgroundColor = "#F1F0F7"
+textColor = "#24234A"
+linkColor = "#C8306F"
+borderColor = "#E3E2EE"
 showWidgetBorder = true
-baseRadius = "10px"
-font = "Heebo:https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&display=swap"
+baseRadius = "12px"
+buttonRadius = "full"
+font = "Rubik:https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap"
 codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
-dataframeHeaderBackgroundColor = "#EEF3F8"
-dataframeBorderColor = "#DCE4EC"
+dataframeHeaderBackgroundColor = "#F1F0F7"
+dataframeBorderColor = "#E3E2EE"
 showSidebarBorder = true
 
 [theme.sidebar]
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F7FA"
+secondaryBackgroundColor = "#F7F7FB"
