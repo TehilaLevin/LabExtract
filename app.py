@@ -220,6 +220,25 @@ div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 96px; objec
 .st-key-save button, .st-key-reopen button {{ min-height: 50px; border-radius: 12px; }}
 .st-key-force_approve button {{ background: {FLAG_COLOR}; color: #1A1100; border: none; font-weight: 600; min-height: 44px; }}
 [data-testid="stColumn"]:has(.st-key-formimage) {{ position: sticky; top: 16px; align-self: flex-start; }}
+/* Export screen. */
+.st-key-downloadcard, .st-key-waitingcard {{ background: #111829; border-radius: 16px; padding: 6px; }}
+.st-key-waitingcard {{ background: #1A1508; border-color: #5C3D00 !important; }}
+.lx-file {{ display: flex; align-items: center; gap: 14px; }}
+.lx-file-icon {{ width: 52px; height: 52px; border-radius: 12px; flex: none; background: #0D2A27 center / 26px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26' fill='none' stroke='%235EEAD4' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 3h9l5 5v15H7z'/%3E%3Cpath d='M16 3v5h5'/%3E%3Cpath d='M10.5 13l5 6M15.5 13l-5 6'/%3E%3C/svg%3E"); }}
+.lx-file bdi {{ font-size: 15px; font-weight: 500; }}
+.st-key-download button {{ min-height: 56px; border-radius: 12px; font-size: 17px; }}
+.st-key-download button:not(:disabled) {{ box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+.lx-ready {{ display: flex; flex-direction: column; gap: 10px; background: #0D1F1D; border: 1px solid #1C4A44;
+    border-radius: 16px; padding: 22px; }}
+.lx-ready strong {{ font-size: 18px; color: {APPROVED_COLOR}; }}
+.lx-ready span {{ font-size: 14px; color: #A8C9C3; }}
+.lx-waiting {{ display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 14px; }}
+.lx-waiting span {{ font-size: 13px; color: #C9B48A; }}
+.lx-waiting em {{ font-style: normal; font-size: 12px; color: #FFC15C; }}
+.st-key-waitingcard [data-testid="stAlertContainer"] {{ background: transparent; color: #FFC15C; font-weight: 600;
+    font-size: 17px; padding: 4px 4px 8px; }}
+[class*="st-key-open_"] button {{ border-color: #5C3D00; color: #FFC15C; background: transparent; min-height: 36px; }}
 </style>
 """
 
@@ -639,29 +658,70 @@ def screen_export() -> None:
     items = reviews()
     df, highlight = rs.export_frame(items)
     waiting = rs.unapproved(items)
-    st.subheader("ייצוא לאקסל")
-    st.write("שורה לכל טופס. תאים כתומים: שדות שסומנו לבדיקה בטפסים שעדיין לא אושרו.")
+    file_name = f"labextract_{date.today():%Y-%m-%d}.xlsx"
+    screen_header(4, "ייצוא", "ייצוא לאקסל" if waiting else "הקובץ מוכן להורדה",
+                  "שורה לכל טופס, עמודה לכל שדה, כותרות בעברית וגיליון מימין לשמאל. "
+                  "שדות שעדיין לא נבדקו מסומנים בכתום גם בקובץ.")
+
+    download_col, status_col = st.columns(2, gap="medium")  # RTL: the download card is on the right
+    with download_col, st.container(border=True, key="downloadcard"):
+        st.markdown(f'<div class="lx-file"><div class="lx-file-icon"></div><div><bdi class="lx-mono">{file_name}</bdi>'
+                    f'<div class="lx-muted">{len(df)} שורות · {len(df.columns)} עמודות · גיליון מימין לשמאל</div>'
+                    '</div></div>', unsafe_allow_html=True)
+        allowed = not waiting
+        if waiting:
+            allowed = st.checkbox("אני מבין/ה – ייצא בכל זאת (השדות שלא נבדקו יסומנו בכתום)", key="export_anyway")
+        st.download_button("הורד קובץ Excel", data=to_xlsx_bytes(df, highlight), file_name=file_name,
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           type="primary", disabled=not allowed, on_click="ignore", key="download",
+                           icon=":material/download:", width="stretch")
+        st.markdown('<span class="lx-muted">הקובץ נוצר בזיכרון ויורד ישירות למחשב שלכם – הוא לא נשמר בשרת.</span>',
+                    unsafe_allow_html=True)
+
+    with status_col:
+        if not waiting:
+            st.markdown(f'<div class="lx-ready"><strong>✓ כל {len(items)} הטפסים אושרו</strong>'
+                        '<span>כל ערך בקובץ נבדק ואושר על ידכם. שדות שהושארו ריקים מופיעים ריקים – בלי ניחוש.</span>'
+                        '</div>', unsafe_allow_html=True)
+        else:
+            with st.container(border=True, key="waitingcard"):
+                st.warning(f"{len(waiting)} טפסים עדיין לא אושרו", icon=":material/warning:")
+                for r in waiting:
+                    pos = items.index(r)
+                    meta = r.record.metadata
+                    flags = len(r.open_flags())
+                    text_col, open_col = st.columns([5, 1], vertical_alignment="center")
+                    text_col.markdown(
+                        f'<div class="lx-waiting"><strong>טופס {pos + 1}</strong> <span>{meta.get("form_type", "")} · '
+                        f'<bdi>{meta.get("source_file", "")}</bdi></span> <em>'
+                        + (f"{flags} שדות לבדיקה" if flags else "ללא סימונים") + "</em></div>",
+                        unsafe_allow_html=True)
+                    open_col.button("פתח", key=f"open_{pos}", on_click=go, args=("review", pos), width="stretch")
 
     headers = {**ALL_HEADERS, REVIEW_STATUS_KEY: REVIEW_STATUS_HEADER}
     view = _rtl_columns(df.rename(columns=headers))
 
     def colour(frame: pd.DataFrame) -> pd.DataFrame:
         styles = pd.DataFrame("", index=frame.index, columns=frame.columns)
-        for pos, key in highlight:
-            styles.iloc[pos, frame.columns.get_loc(headers[key])] = f"background-color: {FLAG_COLOR}"
+        status = frame.columns.get_loc(REVIEW_STATUS_HEADER)
+        for pos in range(len(frame)):
+            if frame.iat[pos, status] == REVIEW_STATUS_APPROVED:
+                styles.iat[pos, status] = f"color: {APPROVED_COLOR}; font-weight: 600"
+        for pos, key in highlight:  # dark text on orange: readable on the dark theme
+            styles.iloc[pos, frame.columns.get_loc(headers[key])] = (f"background-color: {FLAG_COLOR}; "
+                                                                      "color: #1A1100; font-weight: 600")
         return styles
 
-    st.dataframe(view.style.apply(colour, axis=None), hide_index=True)
-
-    allowed = not waiting
-    if waiting:
-        st.warning(f"{len(waiting)} טפסים עדיין לא אושרו:\n"
-                   + "\n".join(f"- טופס {items.index(r) + 1}: {r.label()}" for r in waiting))
-        allowed = st.checkbox("אני מבין/ה – ייצא בכל זאת (השדות שלא נבדקו יסומנו בכתום)", key="export_anyway")
-    st.download_button("הורד קובץ Excel", data=to_xlsx_bytes(df, highlight),
-                       file_name=f"labextract_{date.today():%Y-%m-%d}.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       type="primary", disabled=not allowed, on_click="ignore", key="download")
+    st.markdown('<div class="lx-fields-head" style="margin-top:20px"><strong style="font-size:18px">'
+                'תצוגה מקדימה של הקובץ</strong><span class="lx-muted"><span class="lx-legend"></span>'
+                'שדה מסומן בטופס שלא אושר</span></div>', unsafe_allow_html=True)
+    # Narrow columns so all eleven fit without scrolling (st.dataframe starts scrolled to the left edge,
+    # which would hide the first fields of a right-to-left table).
+    px = {"first_name": 70, "last_name": 72, "id_number": 96, "central_numbers": 76, "received_date": 94,
+          "sending_entity": 68, "commitment_numbers": 80, "source_file": 150, "page_numbers": 62, "form_type": 116,
+          REVIEW_STATUS_KEY: 76}
+    widths = {headers[key]: st.column_config.Column(width=w) for key, w in px.items()}
+    st.dataframe(view.style.apply(colour, axis=None), hide_index=True, column_config=widths)
 
 
 # ------------------------------------------------------------------ main
