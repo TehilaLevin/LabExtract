@@ -78,9 +78,10 @@ def _data_uri(name: str) -> str:
     return f"data:image/png;base64,{base64.b64encode(path.read_bytes()).decode()}" if path.exists() else ""
 
 
-# Partner logos: the Central Virology Laboratory (brand, top of the sidebar), Sheba Medical Center and the
+# Partner logos: Sheba Medical Center and the Central Virology Laboratory (top of the sidebar) and the
 # Ministry of Health (bottom of the sidebar). The look follows the lab's page on the Sheba web site.
 BRAND_HTML = f"""
+<img class="lx-sheba-logo" src="{_data_uri('sheba_logo.png')}" alt="שיבא תל השומר">
 <div class="lx-brand">
   <img class="lx-lab-logo" src="{_data_uri('lab_logo.png')}" alt="המעבדה המרכזית לנגיפים">
   <div><div class="lx-name" dir="ltr">LabExtract</div><div class="lx-sub">המעבדה המרכזית לנגיפים<br>חילוץ טפסי התחייבות</div></div>
@@ -88,8 +89,7 @@ BRAND_HTML = f"""
 """
 PARTNER_HTML = f"""
 <div class="lx-partner"><span>בשיתוף</span>
-  <div class="lx-partner-logos"><img src="{_data_uri('sheba_logo.png')}" alt="שיבא תל השומר">
-  <img src="{_data_uri('moh_logo.png')}" alt="משרד הבריאות"></div></div>
+  <div class="lx-partner-logos"><img src="{_data_uri('moh_logo.png')}" alt="משרד הבריאות"></div></div>
 """
 PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים שהועלו נמחקים בסיום החילוץ. הרשומות נשמרות במחשב הזה בלבד '
                 'ואפשר למחוק אותן במסך הרשומות. שום נתון אישי לא נכתב ליומן.</div>')
@@ -162,8 +162,8 @@ div[class*="st-key-cardflag_"] {{
 .lx-partner {{ display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #DCE4EC; padding-top: 14px;
     margin-top: 18px; font-size: 12px; color: #5F6E82; }}
 .lx-partner-logos {{ display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }}
-.lx-partner-logos img {{ height: 48px; width: auto; max-width: 100%; }}
-.lx-partner-logos img + img {{ height: 64px; }}
+.lx-partner-logos img {{ height: 64px; width: auto; max-width: 100%; }}
+.lx-sheba-logo {{ display: block; height: 52px; width: auto; margin: 0 0 16px; }}
 .lx-name {{ font-weight: 700; font-size: 20px; line-height: 1.2; color: #1B1A6B; }}
 .lx-sub {{ font-size: 12px; color: #5B6B80; }}
 .lx-privacy {{ font-size: 12px; color: #5F6E82; border-top: 1px solid #DCE4EC; padding-top: 14px; margin-top: 18px; }}
