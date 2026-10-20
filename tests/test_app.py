@@ -151,3 +151,13 @@ def test_clear_all_returns_to_upload():
     at = _app([_record(1)])
     at.button(key="clear_all").click().run()
     assert at.session_state["reviews"] is None and at.session_state["screen"] == "upload"
+
+
+def test_export_open_button_jumps_to_the_unapproved_form():
+    at = _app([_record(1), _record(2)], screen="export")
+    reviews = at.session_state["reviews"]
+    rs.approve(reviews[0], {})
+    at.run()
+    assert [b.key for b in at.button if b.key.startswith("open_")] == ["open_1"]
+    at.button(key="open_1").click().run()
+    assert at.session_state["screen"] == "review" and at.session_state["pos"] == 1

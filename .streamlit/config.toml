@@ -6,3 +6,29 @@ maxUploadSize = 500
 
 [browser]
 gatherUsageStats = false
+
+[client]
+# Hide the developer toolbar (Deploy button) in the lab.
+toolbarMode = "minimal"
+
+# "Control room" design (direction B): dark navy ground, mint for actions and approvals,
+# orange (#FFA500, constants.FLAG_COLOR) reserved for fields that need review.
+[theme]
+base = "dark"
+primaryColor = "#5EEAD4"
+backgroundColor = "#0A0F1A"
+secondaryBackgroundColor = "#111829"
+textColor = "#E8EDF7"
+linkColor = "#5EEAD4"
+borderColor = "#1E2944"
+showWidgetBorder = true
+baseRadius = "10px"
+font = "Rubik:https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+dataframeHeaderBackgroundColor = "#0E1422"
+dataframeBorderColor = "#1E2944"
+showSidebarBorder = true
+
+[theme.sidebar]
+backgroundColor = "#0E1422"
+secondaryBackgroundColor = "#172036"

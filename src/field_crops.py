@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import Optional
 
+from PIL import Image, ImageDraw
+
 from src.constants import FIELD_KEYS
 from src.image_preprocessor import resize_for_model
 
@@ -23,6 +25,7 @@ NAME_MIN_PAD_PX = 40
 MAX_SIDE = 1200         # display size: readable on screen, small in memory
 PAGE_MAX_SIDE = 1600    # whole-page preview next to the fields
 JPEG_QUALITY = 85
+OUTLINE_RGB = (255, 165, 0)  # constants.FLAG_COLOR: fields that need review
 
 
 @dataclass(frozen=True)
@@ -80,3 +83,22 @@ def source_crops(images: list, extraction) -> dict:
         for key in NAME_KEYS:
             out[key] = list(name_crops)
     return {k: out[k] for k in FIELD_KEYS if k in out}
+
+
+def outline_boxes(jpeg: bytes, boxes: list) -> bytes:
+    """A page preview with each (ymin, xmin, ymax, xmax) 0-1000 box outlined in orange, in memory only.
+
+    Used on the review screen to show where the fields that need review were read. No boxes: the
+    preview is returned unchanged.
+    """
+    if not boxes:
+        return jpeg
+    img = Image.open(BytesIO(jpeg)).convert("RGB")
+    w, h = img.size
+    width = max(3, round(max(w, h) / 300))
+    draw = ImageDraw.Draw(img)
+    for y0, x0, y1, x1 in boxes:
+        draw.rectangle([x0 * w / 1000, y0 * h / 1000, x1 * w / 1000, y1 * h / 1000], outline=OUTLINE_RGB, width=width)
+    buf = BytesIO()
+    img.save(buf, "JPEG", quality=JPEG_QUALITY)
+    return buf.getvalue()

@@ -273,3 +273,14 @@ def test_process_files_keeps_page_previews_in_memory(monkeypatch, temp_dir):
     assert all(r.page_images[0].jpeg[:2] == b"\xff\xd8" for r in records)
     assert not list(temp_dir.iterdir())
     assert "page_images" not in rb.records_to_dataframe(records).columns
+
+
+def test_outline_boxes_draws_orange_frames_only_where_asked():
+    buf = BytesIO()
+    Image.new("RGB", (1000, 1000), "white").save(buf, "JPEG")
+    page = buf.getvalue()
+    assert fc.outline_boxes(page, []) == page
+    out = Image.open(BytesIO(fc.outline_boxes(page, [(100, 200, 300, 600)])))
+    r, g, b = out.getpixel((200, 200))  # on the frame's left edge
+    assert r > 200 and 120 < g < 210 and b < 90
+    assert out.getpixel((400, 200)) == out.getpixel((900, 900))  # inside the box: untouched

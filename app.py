@@ -37,6 +37,7 @@ from src.constants import (
     FIELD_KEYS,
     FLAG_COLOR,
     FLAG_REASONS,
+    LIST_SEPARATOR,
     REVIEW_STATUS_APPROVED,
     REVIEW_STATUS_HEADER,
     REVIEW_STATUS_KEY,
@@ -44,12 +45,32 @@ from src.constants import (
     SUGGESTION_LABEL,
 )
 from src.excel_exporter import to_xlsx_bytes
+from src.field_crops import outline_boxes
 from src.claude_client import LLMError, LLMQuotaError, check_configured
 from src.validators import list_approved_senders
 
-st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide", initial_sidebar_state="expanded")
 
-SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירת טפסים", "export": "ייצוא"}
+SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירה", "export": "ייצוא"}
+APPROVED_COLOR = "#5EEAD4"  # mint: actions and approvals ("control room" design, see .streamlit/config.toml)
+PIPELINE_STEPS = (
+    ("פיצול לטפסים", "כל עמוד: טופס חדש או המשך של הקודם"),
+    ("זיהוי סוג טופס", "קופה או בית חולים, מרשימה סגורה"),
+    ("חילוץ שדות", "7 שדות, עם רמת ביטחון ומיקום בטופס"),
+    ("אימות ונרמול", "ספרת ביקורת בת״ז, תאריכים, מספרים"),
+    ("סקירה וייצוא", "אתם מאשרים – ומורידים Excel"),
+)
+# Pipeline step shown as active for each progress stage reported by process_files.
+STAGE_STEP = {"start": 0, "split": 0, "extract": 2}
+BRAND_HTML = """
+<div class="lx-brand">
+  <div class="lx-logo"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="#06221E"
+    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12v12H4z"/><path d="M7 8h6M7 11h6M7 14h3"/></svg></div>
+  <div><div class="lx-name" dir="ltr">LabExtract</div><div class="lx-sub">חילוץ טפסי התחייבות</div></div>
+</div>
+"""
+PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים נשמרים רק בזיכרון של החלון הזה ונמחקים בסיום. '
+                'שום נתון אישי לא נכתב ליומן.</div>')
 UPLOAD_TYPES = ["pdf", "png", "jpg", "jpeg"]
 DEV_CACHE_BANNER = ("**מצב פיתוח: DEV_CACHE פעיל.** תשובות המודל (שעלולות לכלול נתונים אישיים) נשמרות בדיסק "
                     "בתיקייה data/dev_cache, כדי שהרצה חוזרת על אותם עמודים לא תעלה כסף. "
@@ -71,6 +92,153 @@ div[class*="st-key-cardflag_"] {{
 }}
 .flag-reason {{ color: {FLAG_COLOR}; font-weight: 600; }}
 .suggestion {{ color: {FLAG_COLOR}; }}
+
+/* Layout and typography of the "control room" design. Colours and fonts come from the theme. */
+[data-testid="stHeader"] {{ background: transparent; }}
+.block-container {{ padding-top: 2.5rem; max-width: 1400px; }}
+.lx-kicker {{ font-size: 13px; font-weight: 600; color: {APPROVED_COLOR}; margin: 0 0 6px; }}
+.lx-h1 {{ font-size: 34px; font-weight: 700; line-height: 1.15; margin: 0 0 10px; padding: 0; }}
+.lx-lead {{ font-size: 16px; color: #B4BFD6; margin: 0; max-width: 760px; }}
+.lx-muted {{ font-size: 13px; color: #8390AC; }}
+.lx-section {{ font-size: 12px; font-weight: 500; color: #93A0BC; margin: 18px 0 8px; }}
+
+/* Primary buttons: dark text on mint. */
+[data-testid="stBaseButton-primary"] {{ color: #06221E; font-weight: 600; border: none; }}
+[data-testid="stBaseButton-primary"]:disabled {{ background: #172036; color: #5B6782; }}
+.st-key-extract button, .st-key-start_review button {{
+    min-height: 52px; padding: 0 28px; border-radius: 12px; font-size: 16px;
+}}
+.st-key-extract button:not(:disabled), .st-key-start_review button {{ box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+
+/* Upload drop zone. Streamlit's built-in English texts are hidden (font-size: 0) and replaced with
+   Hebrew through ::before / ::after; the widget itself and its behaviour stay Streamlit's. */
+[data-testid="stFileUploaderDropzone"] {{
+    border: 2px dashed #2F5F5A; background: #0C1A1F; border-radius: 16px; padding: 36px 24px;
+    display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;
+}}
+[data-testid="stFileUploaderDropzone"]::before {{
+    content: ""; width: 64px; height: 64px; border-radius: 16px; background: #0D2A27 center / 32px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%235EEAD4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21V7M10 12l6-6 6 6'/%3E%3Cpath d='M6 20v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E");
+}}
+[data-testid="stFileUploaderDropzone"]::before {{ order: -2; }}
+[data-testid="stFileUploaderDropzoneInstructions"] {{ order: -1; }}
+[data-testid="stFileUploaderDropzoneInstructions"] span {{ font-size: 0; }}
+[data-testid="stFileUploaderDropzoneInstructions"] > div::before {{
+    content: "גררו קבצים לכאן"; display: block; font-size: 20px; font-weight: 600; color: #E8EDF7;
+}}
+[data-testid="stFileUploaderDropzoneInstructions"] > div::after {{
+    content: "PDF · PNG · JPG · JPEG · עד 500MB לקובץ"; display: block; font-size: 12px; color: #8390AC; margin-top: 6px;
+}}
+[data-testid="stFileUploaderDropzone"] button p {{ font-size: 0; }}
+[data-testid="stFileUploaderDropzone"] button p::after {{ content: "בחירה מהמחשב"; font-size: 14px; }}
+.lx-lead {{ margin-bottom: 22px; }}
+
+/* Sidebar: brand, step navigation, batch list. */
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 4px; }}
+.lx-brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }}
+.lx-logo {{ width: 34px; height: 34px; border-radius: 9px; background: {APPROVED_COLOR};
+    display: flex; align-items: center; justify-content: center; }}
+.lx-name {{ font-weight: 700; font-size: 19px; line-height: 1.2; }}
+.lx-sub {{ font-size: 12px; color: #93A0BC; }}
+.lx-privacy {{ font-size: 12px; color: #8390AC; border-top: 1px solid #1E2944; padding-top: 14px; margin-top: 18px; }}
+.lx-empty {{ border: 1px dashed #243049; border-radius: 10px; padding: 16px 12px; font-size: 13px;
+    color: #8390AC; text-align: center; }}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button,
+[data-testid="stSidebar"] [class*="st-key-queue_"] button {{
+    width: 100%; justify-content: flex-start; border: none; background: transparent; color: #C7D0E2;
+    min-height: 40px; padding: 6px 12px; border-radius: 8px;
+}}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button:hover,
+[data-testid="stSidebar"] [class*="st-key-queue_"] button:hover {{ background: #172036; color: #E8EDF7; }}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button:disabled {{ color: #5B6782; background: transparent; }}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button::before {{
+    content: ""; width: 8px; height: 8px; border-radius: 50%; background: #243049; margin-inline-end: 10px; flex: none;
+}}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button > div,
+[data-testid="stSidebar"] [class*="st-key-queue_"] button > div {{ flex: 1; min-width: 0; justify-content: flex-start; }}
+[data-testid="stSidebar"] [class*="st-key-queue_"] button {{ font-size: 13px; min-height: 36px; }}
+[data-testid="stSidebar"] [class*="st-key-queue_"] button::after {{
+    content: ""; margin-inline-start: auto; min-width: 22px; height: 22px; border-radius: 999px; font-size: 11px;
+    font-weight: 600; display: inline-flex; align-items: center; justify-content: center; background: #172036;
+}}
+[data-testid="stSidebar"] [class*="st-key-queue_"] [data-testid="stMarkdownContainer"] p {{
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}}
+
+/* Stat tiles and pipeline steps. */
+.lx-tiles {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 8px 0 20px; }}
+.lx-tile {{ background: #111829; border: 1px solid #1E2944; border-radius: 12px; padding: 16px 18px; }}
+.lx-tile.flag {{ background: #1A1508; border-color: #5C3D00; }}
+.lx-tile.ok {{ background: #0D1F1D; border-color: #1C4A44; }}
+.lx-tile-label {{ font-size: 13px; color: #93A0BC; }}
+.lx-tile.flag .lx-tile-label {{ color: #FFC15C; }}
+.lx-tile.ok .lx-tile-label {{ color: {APPROVED_COLOR}; }}
+.lx-tile-value {{ font-family: "JetBrains Mono", monospace; font-size: 32px; font-weight: 600; line-height: 1.3; }}
+.lx-tile.flag .lx-tile-value {{ color: {FLAG_COLOR}; }}
+.lx-tile.ok .lx-tile-value {{ color: {APPROVED_COLOR}; }}
+.lx-tile-note {{ font-size: 12px; color: #8390AC; }}
+.lx-tile.flag .lx-tile-note {{ color: #C9A86A; }}
+.lx-bar {{ height: 6px; background: #12302C; border-radius: 3px; overflow: hidden; margin-top: 8px; }}
+.lx-bar > div {{ height: 100%; background: {APPROVED_COLOR}; }}
+.lx-steps {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }}
+.lx-step {{ display: flex; flex-direction: column; gap: 6px; border-radius: 12px; padding: 14px;
+    background: #111829; border: 1px solid #1E2944; }}
+.lx-step.active {{ background: #0D1F1D; border-color: {APPROVED_COLOR}; }}
+.lx-step-num {{ width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center;
+    justify-content: center; font-size: 12px; font-weight: 600; background: #172036; color: #93A0BC; }}
+.lx-step.active .lx-step-num, .lx-step.done .lx-step-num {{ background: {APPROVED_COLOR}; color: #06221E; }}
+.lx-step-title {{ font-weight: 600; font-size: 14px; }}
+.lx-step-text {{ font-size: 12px; color: #93A0BC; line-height: 1.45; }}
+.lx-principle {{ font-size: 13px; color: #8390AC; margin-top: 24px; }}
+.lx-principle span {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: {FLAG_COLOR};
+    margin-inline-end: 8px; }}
+.lx-legend {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: {FLAG_COLOR};
+    vertical-align: middle; margin-inline-end: 4px; }}
+/* Review screen: field cards, confidence chips, sticky action bar and form image. */
+div[class*="st-key-cardok_"] {{ background: #111829; }}
+div[class*="st-key-cardflag_"] {{ background: #1A1508 !important; }}
+div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 96px; object-fit: contain; background: #F4F2EC;
+    border-radius: 8px; }}
+.lx-card-head {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; }}
+.lx-chip {{ font-size: 11px; font-weight: 600; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }}
+.lx-chip.ok {{ color: {APPROVED_COLOR}; background: #0D2A27; }}
+.lx-chip.warn {{ color: #FFC15C; background: #2A1E05; }}
+.lx-chip.big {{ font-size: 12px; padding: 3px 10px; border: 1px solid currentColor; }}
+.flag-reason {{ font-size: 13px; margin-top: 6px; }}
+.lx-title-row {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }}
+.lx-title-row .lx-h1 {{ font-size: 30px; margin: 0; }}
+.lx-dim {{ color: #6F7C99; font-weight: 500; }}
+.lx-mono {{ font-family: "JetBrains Mono", monospace; }}
+.lx-fields-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }}
+.lx-approved {{ font-weight: 600; color: {APPROVED_COLOR}; }}
+.lx-outline {{ display: inline-block; width: 12px; height: 12px; border: 2px solid {FLAG_COLOR}; border-radius: 3px;
+    box-sizing: border-box; vertical-align: middle; margin-inline-end: 6px; }}
+.st-key-actionbar {{ position: sticky; bottom: 0; z-index: 5; background: #0E1422; border: 1px solid #1E2944;
+    border-radius: 14px; padding: 12px 14px; margin-top: 8px; }}
+.st-key-approve button {{ min-height: 50px; padding: 0 24px; border-radius: 12px; font-size: 16px;
+    box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+.st-key-save button, .st-key-reopen button {{ min-height: 50px; border-radius: 12px; }}
+.st-key-force_approve button {{ background: {FLAG_COLOR}; color: #1A1100; border: none; font-weight: 600; min-height: 44px; }}
+[data-testid="stColumn"]:has(.st-key-formimage) {{ position: sticky; top: 16px; align-self: flex-start; }}
+/* Export screen. */
+.st-key-downloadcard, .st-key-waitingcard {{ background: #111829; border-radius: 16px; padding: 6px; }}
+.st-key-waitingcard {{ background: #1A1508; border-color: #5C3D00 !important; }}
+.lx-file {{ display: flex; align-items: center; gap: 14px; }}
+.lx-file-icon {{ width: 52px; height: 52px; border-radius: 12px; flex: none; background: #0D2A27 center / 26px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26' fill='none' stroke='%235EEAD4' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 3h9l5 5v15H7z'/%3E%3Cpath d='M16 3v5h5'/%3E%3Cpath d='M10.5 13l5 6M15.5 13l-5 6'/%3E%3C/svg%3E"); }}
+.lx-file bdi {{ font-size: 15px; font-weight: 500; }}
+.st-key-download button {{ min-height: 56px; border-radius: 12px; font-size: 17px; }}
+.st-key-download button:not(:disabled) {{ box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+.lx-ready {{ display: flex; flex-direction: column; gap: 10px; background: #0D1F1D; border: 1px solid #1C4A44;
+    border-radius: 16px; padding: 22px; }}
+.lx-ready strong {{ font-size: 18px; color: {APPROVED_COLOR}; }}
+.lx-ready span {{ font-size: 14px; color: #A8C9C3; }}
+.lx-waiting {{ display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 14px; }}
+.lx-waiting span {{ font-size: 13px; color: #C9B48A; }}
+.lx-waiting em {{ font-style: normal; font-size: 12px; color: #FFC15C; }}
+.st-key-waitingcard [data-testid="stAlertContainer"] {{ background: transparent; color: #FFC15C; font-weight: 600;
+    font-size: 17px; padding: 4px 4px 8px; }}
+[class*="st-key-open_"] button {{ border-color: #5C3D00; color: #FFC15C; background: transparent; min-height: 36px; }}
 </style>
 """
 
@@ -123,7 +291,18 @@ def run_error_message(exc: Exception) -> str:
 
 # ------------------------------------------------------------------ extraction (background thread)
 
-def run_extraction(files: list) -> None:
+def steps_html(active: int = -1) -> str:
+    """The five pipeline cards on the upload screen; `active` lights the running step (-1: none)."""
+    cards = []
+    for i, (title, text) in enumerate(PIPELINE_STEPS):
+        state = "active" if i == active else ("done" if 0 <= i < active else "")
+        num = "✓" if state == "done" else str(i + 1)
+        cards.append(f'<div class="lx-step {state}"><span class="lx-step-num">{num}</span>'
+                     f'<span class="lx-step-title">{title}</span><span class="lx-step-text">{text}</span></div>')
+    return f'<div class="lx-section">מה קורה בחילוץ</div><div class="lx-steps">{"".join(cards)}</div>'
+
+
+def run_extraction(files: list, progress_slot, steps_slot) -> None:
     from src.record_builder import process_files
 
     payload = [(f.name, f.getvalue()) for f in files]
@@ -143,10 +322,15 @@ def run_extraction(files: list) -> None:
 
     worker = threading.Thread(target=target, daemon=True)
     worker.start()
-    bar = st.progress(0.0, text="ממיר קבצים לתמונות…")
+    bar = progress_slot.progress(0.0, text="ממיר קבצים לתמונות…")
+    shown_step = None
     while worker.is_alive():
         with lock:
             stage, done, total = progress["stage"], progress["done"], progress["total"]
+        step = STAGE_STEP.get(stage, 0)
+        if step != shown_step:
+            steps_slot.markdown(steps_html(step), unsafe_allow_html=True)
+            shown_step = step
         if stage == "split" and total:
             bar.progress(done / total, text=f"מזהה כיוון דפים ומפצל לטפסים… ({done}/{total})")
         elif stage == "extract" and total:
@@ -165,22 +349,43 @@ def run_extraction(files: list) -> None:
 
 # ------------------------------------------------------------------ screens
 
+def screen_header(step: int, name: str, title: str, lead: str) -> None:
+    st.markdown(f'<p class="lx-kicker">שלב {step} מתוך 4 · {name}</p><h1 class="lx-h1">{title}</h1>'
+                f'<p class="lx-lead">{lead}</p>', unsafe_allow_html=True)
+
+
 def screen_upload() -> None:
-    st.subheader("העלאת טפסים")
-    st.write("גררו לכאן קבצי PDF סרוקים או צילומי טלפון (PNG / JPG). קובץ אחד יכול להכיל טפסים רבים.")
+    screen_header(1, "העלאה", "קליטת טפסי התחייבות",
+                  "גררו את כל הטפסים של היום – סריקות, צילומי טלפון או PDF מרובה עמודים. המערכת מפצלת לטפסים, "
+                  "מזהה את הגורם השולח ומחלצת את השדות. כל שדה לא ודאי יסומן בכתום לבדיקה שלכם.")
     problem = config_problem()
     if problem:
-        st.error(problem)
+        st.error(problem, icon=":material/error:")
     files = st.file_uploader("קבצים", type=UPLOAD_TYPES, accept_multiple_files=True,
                              key=f"uploader_{st.session_state.uploader_n}", label_visibility="collapsed")
-    label = "חלץ"
+    label = "חלץ נתונים"
     if reviews():
-        st.warning("חילוץ חדש יחליף את התוצאות הקיימות, כולל תיקונים ואישורים שלא יוצאו.")
+        st.warning("חילוץ חדש יחליף את התוצאות הקיימות, כולל תיקונים ואישורים שלא יוצאו. כדאי לייצא קודם.",
+                   icon=":material/warning:")
         label = "חלץ והחלף את התוצאות"
-    if st.button(label, type="primary", disabled=not files or bool(problem), key="extract"):
-        run_extraction(files)
+    if problem:
+        hint = "יש להשלים את ההגדרות"
+    elif not files:
+        hint = "בחרו קבצים כדי להתחיל"
+    else:
+        hint = f"{len(files)} קבצים · הזמן משתנה לפי מספר העמודים"
+    button_col, hint_col = st.columns([1, 3], vertical_alignment="center")  # RTL: the button is on the right
+    clicked = button_col.button(label, type="primary", disabled=not files or bool(problem), key="extract",
+                                icon=":material/bolt:")
+    hint_col.markdown(f'<span class="lx-muted">{hint}</span>', unsafe_allow_html=True)
+    progress_slot, steps_slot = st.empty(), st.empty()
+    steps_slot.markdown(steps_html(), unsafe_allow_html=True)
+    if clicked:
+        run_extraction(files, progress_slot, steps_slot)
     if st.session_state.run_error:
         st.error(f"החילוץ נכשל: {st.session_state.run_error}")
+    st.markdown('<div class="lx-principle"><span></span>העיקרון: שדה ריק ומסומן עדיף תמיד על ערך מנוחש.</div>',
+                unsafe_allow_html=True)
 
 
 def _rtl_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -192,10 +397,37 @@ def screen_summary() -> None:
     items = reviews()
     flagged = sum(len(r.record.flags) for r in items)
     approved = len(items) - len(rs.unapproved(items))
-    st.subheader("סיכום")
-    st.markdown(f"**{len(items)} טפסים עובדו, {flagged} שדות סומנו לבדיקה, {approved} טפסים אושרו.**")
+    head_col, action_col = st.columns([3, 2], vertical_alignment="bottom")
+    with head_col:
+        screen_header(2, "סיכום", "החילוץ הסתיים",
+                      f"{len(items)} טפסים עובדו, {flagged} שדות סומנו לבדיקה, {approved} טפסים אושרו.")
+    nxt = rs.next_unapproved(items, -1)
+    with action_col:
+        if nxt is not None and st.button("התחל סקירה מהטופס הראשון שלא אושר", type="primary", key="start_review",
+                                         icon=":material/arrow_back:", icon_position="right"):
+            go("review", nxt)
+            st.rerun()
 
     df = rs.summary_frame(items)
+    files = df["source_file"].nunique()
+    pages = sum(len(str(p).split(LIST_SEPARATOR)) for p in df["page_numbers"] if str(p))
+    flagged_forms = int((df["flagged_fields"] > 0).sum())
+    warnings = int(df["form_warnings"].sum())
+    warning_forms = int((df["form_warnings"] > 0).sum())
+    share = round(100 * approved / len(items)) if items else 0
+    st.markdown(f"""
+<div class="lx-tiles">
+  <div class="lx-tile"><div class="lx-tile-label">טפסים</div><div class="lx-tile-value">{len(items)}</div>
+    <div class="lx-tile-note">מתוך {files} קבצים · {pages} עמודים</div></div>
+  <div class="lx-tile flag"><div class="lx-tile-label">שדות לבדיקה</div><div class="lx-tile-value">{flagged}</div>
+    <div class="lx-tile-note">ב־{flagged_forms} טפסים</div></div>
+  <div class="lx-tile flag"><div class="lx-tile-label">אזהרות טופס</div><div class="lx-tile-value">{warnings}</div>
+    <div class="lx-tile-note">ב־{warning_forms} טפסים · פיצול או חילוץ</div></div>
+  <div class="lx-tile ok"><div class="lx-tile-label">אושרו</div>
+    <div class="lx-tile-value">{approved}<span style="font-size:18px;color:#3E8F84"> / {len(items)}</span></div>
+    <div class="lx-bar"><div style="width:{share}%"></div></div></div>
+</div>""", unsafe_allow_html=True)
+
     df.insert(0, "position", range(1, len(df) + 1))
     headers = {"position": "#", "source_file": ALL_HEADERS["source_file"], "page_numbers": ALL_HEADERS["page_numbers"],
                "form_type": ALL_HEADERS["form_type"], "flagged_fields": "שדות לבדיקה",
@@ -208,19 +440,29 @@ def screen_summary() -> None:
         for col in row.index:
             hot = not done and ((col in ("שדות לבדיקה", "אזהרות טופס") and row[col] > 0)
                                 or col == REVIEW_STATUS_HEADER)
-            out.append(f"background-color: {FLAG_COLOR}" if hot else "")
+            if hot:  # dark text on orange: readable on the dark theme
+                out.append(f"background-color: {FLAG_COLOR}; color: #1A1100; font-weight: 600")
+            elif done and col == REVIEW_STATUS_HEADER:
+                out.append(f"color: {APPROVED_COLOR}; font-weight: 600")
+            else:
+                out.append("")
         return out
 
-    st.caption("לחצו על שורה כדי לפתוח את הטופס.")
+    st.markdown('<div class="lx-section" style="font-size:18px;font-weight:600;color:#E8EDF7">כל הטפסים</div>'
+                '<span class="lx-muted">לחצו על שורה כדי לפתוח את הטופס · <span class="lx-legend"></span>'
+                'דורש בדיקה</span>', unsafe_allow_html=True)
     event = st.dataframe(view.style.apply(colour, axis=1), hide_index=True, on_select="rerun",
                          selection_mode="single-row", key=f"summary_{st.session_state.nonce}")
     if event.selection.rows:
         go("review", event.selection.rows[0])
         st.rerun()
-    nxt = rs.next_unapproved(items, -1)
-    if nxt is not None and st.button("התחל סקירה מהטופס הראשון שלא אושר", type="primary", key="start_review"):
-        go("review", nxt)
-        st.rerun()
+
+
+def _confidence_chip(value: float) -> str:
+    """The extractor reports high / medium / low (constants.CONFIDENCE_LABELS); only high passes the threshold."""
+    if value >= config.CONFIDENCE_THRESHOLD:
+        return '<span class="lx-chip ok">ביטחון גבוה</span>'
+    return f'<span class="lx-chip warn">ביטחון {"בינוני" if value >= 0.5 else "נמוך"}</span>'
 
 
 def _field_card(review: rs.FormReview, key: str, senders: list, nonce: int) -> object:
@@ -229,14 +471,17 @@ def _field_card(review: rs.FormReview, key: str, senders: list, nonce: int) -> o
     flag = review.open_flags().get(key)
     card_key = f"{'cardflag' if flag else 'cardok'}_{review.form_index}_{key}_{nonce}"
     with st.container(border=True, key=card_key):
-        title = f"**{FIELD_HEADERS[key]}**"
+        chip = _confidence_chip(rec.confidences[key]) if key in rec.confidences and not rec.error else ""
+        title = f'<div class="lx-card-head"><strong>{FIELD_HEADERS[key]}</strong>{chip}</div>'
         if flag:
-            title += f' &nbsp; <span class="flag-reason">⚠ {FLAG_REASONS.get(flag, flag)}</span>'
+            title += f'<div class="flag-reason">⚠ {FLAG_REASONS.get(flag, flag)}</div>'
         st.markdown(title, unsafe_allow_html=True)
 
         crops = rec.field_crops.get(key, [])
         for crop in crops:
-            caption = f"עמוד {crop.page}" if len(rec.page_images) > 1 else None
+            caption = None
+            if len(rec.page_images) > 1 and crop.page <= len(rec.page_images):
+                caption = f"עמוד {rec.page_images[crop.page - 1].page_number}"
             st.image(crop.jpeg, caption=caption, width="stretch")
         if not crops and not rec.error:
             st.caption("אין חיתוך מקור: המודל לא סימן היכן הערך מופיע בטופס.")
@@ -248,24 +493,26 @@ def _field_card(review: rs.FormReview, key: str, senders: list, nonce: int) -> o
             value = st.selectbox(FIELD_HEADERS[key], options, index=options.index(current), key=input_key,
                                  label_visibility="collapsed", format_func=lambda o: o or "— לא נבחר —")
         else:
-            value = st.text_input(FIELD_HEADERS[key], value=current, key=input_key, label_visibility="collapsed")
+            value = st.text_input(FIELD_HEADERS[key], value=current, key=input_key, label_visibility="collapsed",
+                                  placeholder="להקלדה מתוך התמונה" if rec.error else "ריק – להשלמה")
 
         suggestion = rec.suggestions.get(key)
         if suggestion and not review.value(key):
-            st.markdown(f'<span class="suggestion">{SUGGESTION_LABEL}:</span> (העתיקו לשדה רק אם הקריאה נכונה)',
+            st.markdown(f'<span class="suggestion">{SUGGESTION_LABEL}</span> · העתיקו לשדה רק אם הקריאה נכונה',
                         unsafe_allow_html=True)
-            st.code(suggestion, language=None)
+            st.code(suggestion, language=None)  # st.code has a copy button
+        details = []
         alternatives = rec.alternatives.get(key)
         if alternatives and flag:
-            st.caption("קריאות נוספות של המנוע: " + " | ".join(alternatives))
-        if key in rec.confidences and not rec.error:
-            st.caption(f"ביטחון המודל: {rec.confidences[key]:.0%}")
+            details.append("קריאות נוספות של המנוע: " + " | ".join(alternatives))
         if rec.notes.get(key):
-            st.caption(f"מקור לפי המודל: {rec.notes[key]}")
+            details.append(f"מקור לפי המודל: {rec.notes[key]}")
         raw_text = rec.raw_texts.get(key)
         if raw_text and raw_text != review.value(key):
             # A reading aid, never a value: it may be partial ("?" = a character the model could not read).
-            st.caption(f"טקסט כפי שנקרא (לא ערך מאושר, ? = תו לא קריא): {raw_text}")
+            details.append(f"טקסט כפי שנקרא (לא ערך מאושר, ? = תו לא קריא): {raw_text}")
+        if details:
+            st.caption(" · ".join(details))
     return value
 
 
@@ -287,56 +534,96 @@ def _after_approval(pos: int, empty: list) -> None:
         go("review", nxt)
 
 
+def _page_with_flags(review: rs.FormReview, page: int, jpeg: bytes) -> tuple:
+    """(preview with the open-flag boxes of this page outlined in orange, names of the outlined fields)."""
+    boxes, names = [], []
+    for key in review.open_flags():
+        located = [c.box for c in review.record.field_crops.get(key, []) if c.page == page]
+        if located:
+            boxes += [b for b in located if b not in boxes]
+            names.append(FIELD_HEADERS[key])
+    return outline_boxes(jpeg, boxes), names
+
+
 def screen_review(senders: list) -> None:
     items = reviews()
     pos = min(st.session_state.pos, len(items) - 1)
     review = items[pos]
     rec = review.record
     nonce = st.session_state.nonce
+    meta = rec.metadata
 
-    nav = st.columns([1, 1, 1, 3])
-    if nav[0].button("→ הקודם", disabled=pos == 0, width="stretch", key="prev"):
-        go("review", pos - 1)
-        st.rerun()
-    if nav[1].button("הבא ←", disabled=pos == len(items) - 1, width="stretch", key="next"):
-        go("review", pos + 1)
-        st.rerun()
-    if nav[2].button("חזרה לסיכום", width="stretch", key="to_summary"):
-        go("summary")
-        st.rerun()
+    head_col, nav_col = st.columns([3, 1], vertical_alignment="bottom")
+    with head_col:
+        chip = ('<span class="lx-chip ok big">אושר</span>' if review.approved
+                else '<span class="lx-chip warn big">ממתין לאישור</span>')
+        st.markdown(
+            f'<p class="lx-kicker">שלב 3 מתוך 4 · סקירה</p>'
+            f'<div class="lx-title-row"><h1 class="lx-h1">טופס {pos + 1} <span class="lx-dim">/ {len(items)}</span>'
+            f' · {meta.get("form_type", "") or "לא מזוהה"}</h1>{chip}</div>'
+            f'<p class="lx-muted">קובץ <bdi class="lx-mono">{meta.get("source_file", "")}</bdi>'
+            f' · עמודים <bdi dir="ltr">{meta.get("page_numbers", "")}</bdi></p>', unsafe_allow_html=True)
+    with nav_col:
+        prev_col, next_col = st.columns(2)
+        if prev_col.button("הקודם", disabled=pos == 0, width="stretch", key="prev",
+                          icon=":material/chevron_left:"):  # Material icons mirror in RTL: points right
+            go("review", pos - 1)
+            st.rerun()
+        if next_col.button("הבא", disabled=pos == len(items) - 1, width="stretch", key="next",
+                           icon=":material/chevron_right:"):
+            go("review", pos + 1)
+            st.rerun()
 
-    status = "✅ אושר" if review.approved else "⏳ ממתין לאישור"
-    st.subheader(f"טופס {pos + 1} מתוך {len(items)} · {status}")
-    st.caption(f"{review.label()} · {rec.metadata.get('form_type', '')}")
     if rec.error:
         # The error text holds only status codes / error types, never form content.
-        st.error("החילוץ האוטומטי נכשל בטופס זה – יש להקליד את השדות ידנית מתוך התמונה.\n\n"
-                 f"פרטי השגיאה: {rec.error}")
+        st.error("**החילוץ האוטומטי נכשל בטופס זה – יש להקליד את השדות ידנית מתוך התמונה.**\n\n"
+                 f"פרטי השגיאה: {rec.error}", icon=":material/error:")
     for code in rec.split_flags:
-        st.warning(SPLIT_FLAG_LABELS.get(code, code))
+        st.warning(SPLIT_FLAG_LABELS.get(code, code), icon=":material/warning:")
 
     fields_col, image_col = st.columns([6, 5], gap="large")  # RTL: the first column is on the right
-    with image_col:
+    with image_col, st.container(border=True, key="formimage"):
         pages = rec.page_images
         if pages:
-            shown = pages[0]
+            index = 0
             if len(pages) > 1:
                 numbers = [p.page_number for p in pages]
                 chosen = st.radio("עמוד", numbers, horizontal=True, key=f"page_{rec.form_index}_{nonce}",
-                                  format_func=lambda n: f"עמוד {n}")
-                shown = pages[numbers.index(chosen)]
-            st.image(shown.jpeg, width="stretch")
+                                  format_func=lambda n: f"עמוד {n}", label_visibility="collapsed")
+                index = numbers.index(chosen)
+            image, outlined = _page_with_flags(review, index + 1, pages[index].jpeg)
+            st.image(image, width="stretch")
+            if outlined:
+                st.markdown('<span class="lx-muted"><span class="lx-outline"></span>מסומנים בכתום על הטופס: '
+                            + ", ".join(outlined) + "</span>", unsafe_allow_html=True)
         else:
             st.info("אין תמונה זמינה לטופס זה.")
 
     with fields_col:
+        open_count = len(review.open_flags())
+        st.markdown('<div class="lx-fields-head"><strong>שדות שחולצו</strong><span class="lx-muted">'
+                    + (f"{open_count} מתוך {len(FIELD_KEYS)} שדות לבדיקה" if open_count else
+                       ("כל השדות אושרו" if review.approved else "אין שדות מסומנים"))
+                    + "</span></div>", unsafe_allow_html=True)
         # enter_to_submit=False: Enter in a field must never approve a form by accident.
         with st.form(key=f"fields_{rec.form_index}_{nonce}", border=False, enter_to_submit=False):
-            entered = {key: _field_card(review, key, senders, nonce) for key in FIELD_KEYS}
-            b1, b2 = st.columns(2)
-            approve_clicked = b1.form_submit_button("אשר טופס ועבור לבא", type="primary", width="stretch",
-                                                    key="approve")
-            save_clicked = b2.form_submit_button("שמור בלי לאשר", width="stretch", key="save")
+            entered = {}
+            for row in range(0, len(FIELD_KEYS), 2):
+                cols = st.columns(2)
+                for col, key in zip(cols, FIELD_KEYS[row:row + 2]):
+                    with col:
+                        entered[key] = _field_card(review, key, senders, nonce)
+            approve_clicked = save_clicked = reopen_clicked = False
+            with st.container(key="actionbar", horizontal=True, vertical_alignment="center"):
+                if review.approved:
+                    st.markdown('<span class="lx-approved">✓ הטופס אושר</span>', unsafe_allow_html=True)
+                    reopen_clicked = st.form_submit_button("בטל אישור", key="reopen")
+                else:
+                    approve_clicked = st.form_submit_button("אשר טופס ועבור לבא", type="primary", key="approve",
+                                                            icon=":material/check:")
+                    save_clicked = st.form_submit_button("שמור בלי לאשר", key="save")
+                    st.markdown('<span class="lx-muted">שדה ריק ומסומן עדיף על ערך מנוחש</span>',
+                                unsafe_allow_html=True)
 
         if approve_clicked:
             result = rs.approve(review, entered)
@@ -352,73 +639,155 @@ def screen_review(senders: list) -> None:
             st.session_state.notice = "התיקונים נשמרו. הטופס עדיין לא אושר."
             st.session_state.nonce += 1
             st.rerun()
-
-        pending = st.session_state.pending
-        if pending and pending["pos"] == pos and not review.approved:
-            st.warning("בדיקת התקינות נכשלה בשדות הבאים. תקנו ואשרו שוב, או אשרו בכל זאת אם הערך נכון "
-                       "(למשל מספר דרכון):\n" + _warning_lines(pending["warnings"]))
-            if st.button("אשר בכל זאת", type="primary", key="force_approve"):
-                result = rs.approve(review, {}, force=True)
-                _after_approval(pos, result.empty)
-                st.rerun()
-        if review.approved and st.button("בטל אישור", key="reopen"):
+        if reopen_clicked:
             rs.reopen(review)
             st.session_state.nonce += 1
             st.rerun()
+
+        pending = st.session_state.pending
+        if pending and pending["pos"] == pos and not review.approved:
+            st.warning("**בדיקת התקינות נכשלה** – תקנו ואשרו שוב, או אשרו בכל זאת אם הערך נכון "
+                       "(למשל מספר דרכון):\n" + _warning_lines(pending["warnings"]), icon=":material/warning:")
+            if st.button("אשר בכל זאת", key="force_approve"):
+                result = rs.approve(review, {}, force=True)
+                _after_approval(pos, result.empty)
+                st.rerun()
 
 
 def screen_export() -> None:
     items = reviews()
     df, highlight = rs.export_frame(items)
     waiting = rs.unapproved(items)
-    st.subheader("ייצוא לאקסל")
-    st.write("שורה לכל טופס. תאים כתומים: שדות שסומנו לבדיקה בטפסים שעדיין לא אושרו.")
+    file_name = f"labextract_{date.today():%Y-%m-%d}.xlsx"
+    screen_header(4, "ייצוא", "ייצוא לאקסל" if waiting else "הקובץ מוכן להורדה",
+                  "שורה לכל טופס, עמודה לכל שדה, כותרות בעברית וגיליון מימין לשמאל. "
+                  "שדות שעדיין לא נבדקו מסומנים בכתום גם בקובץ.")
+
+    download_col, status_col = st.columns(2, gap="medium")  # RTL: the download card is on the right
+    with download_col, st.container(border=True, key="downloadcard"):
+        st.markdown(f'<div class="lx-file"><div class="lx-file-icon"></div><div><bdi class="lx-mono">{file_name}</bdi>'
+                    f'<div class="lx-muted">{len(df)} שורות · {len(df.columns)} עמודות · גיליון מימין לשמאל</div>'
+                    '</div></div>', unsafe_allow_html=True)
+        allowed = not waiting
+        if waiting:
+            allowed = st.checkbox("אני מבין/ה – ייצא בכל זאת (השדות שלא נבדקו יסומנו בכתום)", key="export_anyway")
+        st.download_button("הורד קובץ Excel", data=to_xlsx_bytes(df, highlight), file_name=file_name,
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           type="primary", disabled=not allowed, on_click="ignore", key="download",
+                           icon=":material/download:", width="stretch")
+        st.markdown('<span class="lx-muted">הקובץ נוצר בזיכרון ויורד ישירות למחשב שלכם – הוא לא נשמר בשרת.</span>',
+                    unsafe_allow_html=True)
+
+    with status_col:
+        if not waiting:
+            st.markdown(f'<div class="lx-ready"><strong>✓ כל {len(items)} הטפסים אושרו</strong>'
+                        '<span>כל ערך בקובץ נבדק ואושר על ידכם. שדות שהושארו ריקים מופיעים ריקים – בלי ניחוש.</span>'
+                        '</div>', unsafe_allow_html=True)
+        else:
+            with st.container(border=True, key="waitingcard"):
+                st.warning(f"{len(waiting)} טפסים עדיין לא אושרו", icon=":material/warning:")
+                for r in waiting:
+                    pos = items.index(r)
+                    meta = r.record.metadata
+                    flags = len(r.open_flags())
+                    text_col, open_col = st.columns([5, 1], vertical_alignment="center")
+                    text_col.markdown(
+                        f'<div class="lx-waiting"><strong>טופס {pos + 1}</strong> <span>{meta.get("form_type", "")} · '
+                        f'<bdi>{meta.get("source_file", "")}</bdi></span> <em>'
+                        + (f"{flags} שדות לבדיקה" if flags else "ללא סימונים") + "</em></div>",
+                        unsafe_allow_html=True)
+                    open_col.button("פתח", key=f"open_{pos}", on_click=go, args=("review", pos), width="stretch")
 
     headers = {**ALL_HEADERS, REVIEW_STATUS_KEY: REVIEW_STATUS_HEADER}
     view = _rtl_columns(df.rename(columns=headers))
 
     def colour(frame: pd.DataFrame) -> pd.DataFrame:
         styles = pd.DataFrame("", index=frame.index, columns=frame.columns)
-        for pos, key in highlight:
-            styles.iloc[pos, frame.columns.get_loc(headers[key])] = f"background-color: {FLAG_COLOR}"
+        status = frame.columns.get_loc(REVIEW_STATUS_HEADER)
+        for pos in range(len(frame)):
+            if frame.iat[pos, status] == REVIEW_STATUS_APPROVED:
+                styles.iat[pos, status] = f"color: {APPROVED_COLOR}; font-weight: 600"
+        for pos, key in highlight:  # dark text on orange: readable on the dark theme
+            styles.iloc[pos, frame.columns.get_loc(headers[key])] = (f"background-color: {FLAG_COLOR}; "
+                                                                      "color: #1A1100; font-weight: 600")
         return styles
 
-    st.dataframe(view.style.apply(colour, axis=None), hide_index=True)
-
-    allowed = not waiting
-    if waiting:
-        st.warning(f"{len(waiting)} טפסים עדיין לא אושרו:\n"
-                   + "\n".join(f"- טופס {items.index(r) + 1}: {r.label()}" for r in waiting))
-        allowed = st.checkbox("אני מבין/ה – ייצא בכל זאת (השדות שלא נבדקו יסומנו בכתום)", key="export_anyway")
-    st.download_button("הורד קובץ Excel", data=to_xlsx_bytes(df, highlight),
-                       file_name=f"labextract_{date.today():%Y-%m-%d}.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       type="primary", disabled=not allowed, on_click="ignore", key="download")
+    st.markdown('<div class="lx-fields-head" style="margin-top:20px"><strong style="font-size:18px">'
+                'תצוגה מקדימה של הקובץ</strong><span class="lx-muted"><span class="lx-legend"></span>'
+                'שדה מסומן בטופס שלא אושר</span></div>', unsafe_allow_html=True)
+    # Narrow columns so all eleven fit without scrolling (st.dataframe starts scrolled to the left edge,
+    # which would hide the first fields of a right-to-left table).
+    px = {"first_name": 70, "last_name": 72, "id_number": 96, "central_numbers": 76, "received_date": 94,
+          "sending_entity": 68, "commitment_numbers": 80, "source_file": 150, "page_numbers": 62, "form_type": 116,
+          REVIEW_STATUS_KEY: 76}
+    widths = {headers[key]: st.column_config.Column(width=w) for key, w in px.items()}
+    st.dataframe(view.style.apply(colour, axis=None), hide_index=True, column_config=widths)
 
 
 # ------------------------------------------------------------------ main
 
+def _sidebar_css(items: list, screen: str, pos: int) -> str:
+    """Per-item CSS for the sidebar: the current step and form, step dots and the batch-list badges.
+
+    Streamlit buttons take only a text label, so state (current, approved, number of open flags) is drawn
+    with CSS on each button's key class ("st-key-<key>").
+    """
+    order = list(SCREENS)
+    rules = [f'[data-testid="stSidebar"] div.st-key-nav_{screen} button {{ background: #172036; color: #E8EDF7; '
+             f'font-weight: 600; }}',
+             f'[data-testid="stSidebar"] div.st-key-nav_{screen} button::before {{ background: transparent; '
+             f'border: 2px solid {APPROVED_COLOR}; box-sizing: border-box; }}']
+    if items:
+        rules += [f'[data-testid="stSidebar"] div.st-key-nav_{s} button::before {{ background: {APPROVED_COLOR}; }}'
+                  for s in order[:order.index(screen)]]
+    for i, r in enumerate(items):
+        sel = f'[data-testid="stSidebar"] div.st-key-queue_{i} button'
+        issues = len(r.open_flags()) + len(r.record.split_flags) + bool(r.record.error)
+        if r.approved:
+            rules.append(f'{sel}::after {{ content: "✓"; background: #0D2A27; color: {APPROVED_COLOR}; }}')
+        elif issues:
+            rules.append(f'{sel}::after {{ content: "{issues}"; background: #2A1E05; color: #FFC15C; }}')
+        if screen == "review" and i == pos:
+            rules.append(f'{sel} {{ background: #172036; color: #E8EDF7; box-shadow: inset 0 0 0 1px #2A3654; }}')
+    return "<style>" + "\n".join(rules) + "</style>"
+
+
+def sidebar(has_results: bool) -> None:
+    items = reviews()
+    with st.sidebar:
+        st.markdown(BRAND_HTML + _sidebar_css(items, st.session_state.screen, st.session_state.pos),
+                    unsafe_allow_html=True)
+        for screen, label in SCREENS.items():
+            st.button(label, key=f"nav_{screen}", type="tertiary", disabled=not has_results and screen != "upload",
+                      on_click=go, args=(screen,), width="stretch")
+        approved = len(items) - len(rs.unapproved(items))
+        st.markdown(f'<div class="lx-section" style="display:flex;justify-content:space-between">'
+                    f'<span>טפסים שהועלו</span><span dir="ltr">{approved} / {len(items)}</span></div>'
+                    if items else '<div class="lx-section">טפסים שהועלו</div>', unsafe_allow_html=True)
+        if not items:
+            st.markdown('<div class="lx-empty">עדיין אין טפסים.<br>הטפסים יופיעו כאן אחרי החילוץ.</div>'
+                        + PRIVACY_NOTE, unsafe_allow_html=True)
+            return
+        for i, r in enumerate(items):
+            st.button(f"{i + 1} {r.record.metadata.get('form_type', '') or 'לא מזוהה'}", key=f"queue_{i}",
+                      type="tertiary", on_click=go, args=("review", i), width="stretch")
+        st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+        if st.button("נקה הכל", help="מוחק את כל התוצאות מהזיכרון", key="clear_all", icon=":material/delete:",
+                     width="stretch"):
+            clear_all()
+            st.rerun()
+
+
 def main() -> None:
     init_state()
     st.markdown(CSS, unsafe_allow_html=True)
-    st.title("LabExtract")
-    st.caption("חילוץ נתונים מטפסי התחייבות · שדה ריק ומסומן עדיף תמיד על ערך מנוחש")
     if config.DEV_CACHE:
         st.error(DEV_CACHE_BANNER, icon="⚠️")
 
     has_results = bool(reviews())
     if not has_results:
         st.session_state.screen = "upload"
-    top = st.columns([4, 1])
-    with top[0]:
-        options = list(SCREENS) if has_results else ["upload"]
-        st.session_state.nav = st.session_state.screen  # set before the widget is created
-        st.radio("מסך", options, format_func=SCREENS.get, horizontal=True, key="nav",
-                 label_visibility="collapsed", on_change=lambda: go(st.session_state.nav))
-    with top[1]:
-        if has_results and st.button("נקה הכל", help="מוחק את כל התוצאות מהזיכרון", key="clear_all"):
-            clear_all()
-            st.rerun()
+    sidebar(has_results)
 
     if st.session_state.notice:
         st.success(st.session_state.notice)
