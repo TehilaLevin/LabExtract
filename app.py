@@ -22,9 +22,11 @@ Streamlit limits and how they are handled:
 - Navigation is a plain session-state value, not st.tabs: tabs cannot be switched from code, and
   "approve form" has to move to the next form.
 """
+import base64
 import threading
 import time
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -52,7 +54,8 @@ from src.validators import list_approved_senders
 st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide", initial_sidebar_state="expanded")
 
 SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירה", "export": "ייצוא"}
-APPROVED_COLOR = "#5EEAD4"  # mint: actions and approvals ("control room" design, see .streamlit/config.toml)
+APPROVED_COLOR = "#1E8A5A"  # green: approved forms and high confidence
+ACCENT_COLOR = "#0077A8"    # lab blue: actions, current step (see .streamlit/config.toml)
 PIPELINE_STEPS = (
     ("פיצול לטפסים", "כל עמוד: טופס חדש או המשך של הקודם"),
     ("זיהוי סוג טופס", "קופה או בית חולים, מרשימה סגורה"),
@@ -62,12 +65,26 @@ PIPELINE_STEPS = (
 )
 # Pipeline step shown as active for each progress stage reported by process_files.
 STAGE_STEP = {"start": 0, "split": 0, "extract": 2}
-BRAND_HTML = """
+ASSETS = Path(__file__).resolve().parent / "assets"
+
+
+def _data_uri(name: str) -> str:
+    """A logo from assets/ as a data: URI, so it can sit inside sidebar HTML ("" when the file is missing)."""
+    path = ASSETS / name
+    return f"data:image/png;base64,{base64.b64encode(path.read_bytes()).decode()}" if path.exists() else ""
+
+
+# Partner logos: the Central Virology Laboratory (brand, top of the sidebar) and the Ministry of Health
+# (bottom of the sidebar). Colours of the whole theme are taken from these two logos.
+BRAND_HTML = f"""
 <div class="lx-brand">
-  <div class="lx-logo"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="#06221E"
-    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12v12H4z"/><path d="M7 8h6M7 11h6M7 14h3"/></svg></div>
-  <div><div class="lx-name" dir="ltr">LabExtract</div><div class="lx-sub">חילוץ טפסי התחייבות</div></div>
+  <img class="lx-lab-logo" src="{_data_uri('lab_logo.png')}" alt="המעבדה המרכזית לנגיפים">
+  <div><div class="lx-name" dir="ltr">LabExtract</div><div class="lx-sub">המעבדה המרכזית לנגיפים<br>חילוץ טפסי התחייבות</div></div>
 </div>
+"""
+PARTNER_HTML = f"""
+<div class="lx-partner"><span>בשיתוף</span>
+  <img src="{_data_uri('moh_logo.png')}" alt="משרד הבריאות"></div>
 """
 PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים נשמרים רק בזיכרון של החלון הזה ונמחקים בסיום. '
                 'שום נתון אישי לא נכתב ליומן.</div>')
@@ -90,44 +107,44 @@ div[class*="st-key-cardflag_"] {{
     border: 2px solid {FLAG_COLOR} !important;
     background: rgba(255, 165, 0, 0.10);
 }}
-.flag-reason {{ color: {FLAG_COLOR}; font-weight: 600; }}
-.suggestion {{ color: {FLAG_COLOR}; }}
+.flag-reason {{ color: #9A5800; font-weight: 600; }}  /* dark orange: readable on white (#FFA500 is too light for text) */
+.suggestion {{ color: #9A5800; }}
 
-/* Layout and typography of the "control room" design. Colours and fonts come from the theme. */
+/* Layout and typography. Colours come from the lab and Ministry of Health logos (see .streamlit/config.toml). */
 [data-testid="stHeader"] {{ background: transparent; }}
 .block-container {{ padding-top: 2.5rem; max-width: 1400px; }}
-.lx-kicker {{ font-size: 13px; font-weight: 600; color: {APPROVED_COLOR}; margin: 0 0 6px; }}
-.lx-h1 {{ font-size: 34px; font-weight: 700; line-height: 1.15; margin: 0 0 10px; padding: 0; }}
-.lx-lead {{ font-size: 16px; color: #B4BFD6; margin: 0; max-width: 760px; }}
-.lx-muted {{ font-size: 13px; color: #8390AC; }}
-.lx-section {{ font-size: 12px; font-weight: 500; color: #93A0BC; margin: 18px 0 8px; }}
+.lx-kicker {{ font-size: 13px; font-weight: 600; color: {ACCENT_COLOR}; margin: 0 0 6px; }}
+.lx-h1 {{ font-size: 34px; font-weight: 700; line-height: 1.15; margin: 0 0 10px; padding: 0; color: #183060; }}
+.lx-lead {{ font-size: 16px; color: #44546B; margin: 0; max-width: 760px; }}
+.lx-muted {{ font-size: 13px; color: #5F6E82; }}
+.lx-section {{ font-size: 12px; font-weight: 500; color: #5B6B80; margin: 18px 0 8px; }}
 
-/* Primary buttons: dark text on mint. */
-[data-testid="stBaseButton-primary"] {{ color: #06221E; font-weight: 600; border: none; }}
-[data-testid="stBaseButton-primary"]:disabled {{ background: #172036; color: #5B6782; }}
+/* Primary buttons: white text on lab blue. */
+[data-testid="stBaseButton-primary"] {{ color: #FFFFFF; font-weight: 600; border: none; }}
+[data-testid="stBaseButton-primary"]:disabled {{ background: #E6ECF2; color: #8C99AA; }}
 .st-key-extract button, .st-key-start_review button {{
     min-height: 52px; padding: 0 28px; border-radius: 12px; font-size: 16px;
 }}
-.st-key-extract button:not(:disabled), .st-key-start_review button {{ box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+.st-key-extract button:not(:disabled), .st-key-start_review button {{ box-shadow: 0 0 0 4px rgba(0, 119, 168, 0.15); }}
 
 /* Upload drop zone. Streamlit's built-in English texts are hidden (font-size: 0) and replaced with
    Hebrew through ::before / ::after; the widget itself and its behaviour stay Streamlit's. */
 [data-testid="stFileUploaderDropzone"] {{
-    border: 2px dashed #2F5F5A; background: #0C1A1F; border-radius: 16px; padding: 36px 24px;
+    border: 2px dashed #7FC1DC; background: #F2F9FC; border-radius: 16px; padding: 36px 24px;
     display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;
 }}
 [data-testid="stFileUploaderDropzone"]::before {{
-    content: ""; width: 64px; height: 64px; border-radius: 16px; background: #0D2A27 center / 32px no-repeat
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%235EEAD4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21V7M10 12l6-6 6 6'/%3E%3Cpath d='M6 20v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E");
+    content: ""; width: 64px; height: 64px; border-radius: 16px; background: #E6F2F8 center / 32px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%230077A8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21V7M10 12l6-6 6 6'/%3E%3Cpath d='M6 20v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E");
 }}
 [data-testid="stFileUploaderDropzone"]::before {{ order: -2; }}
 [data-testid="stFileUploaderDropzoneInstructions"] {{ order: -1; }}
 [data-testid="stFileUploaderDropzoneInstructions"] span {{ font-size: 0; }}
 [data-testid="stFileUploaderDropzoneInstructions"] > div::before {{
-    content: "גררו קבצים לכאן"; display: block; font-size: 20px; font-weight: 600; color: #E8EDF7;
+    content: "גררו קבצים לכאן"; display: block; font-size: 20px; font-weight: 600; color: #183060;
 }}
 [data-testid="stFileUploaderDropzoneInstructions"] > div::after {{
-    content: "PDF · PNG · JPG · JPEG · עד 500MB לקובץ"; display: block; font-size: 12px; color: #8390AC; margin-top: 6px;
+    content: "PDF · PNG · JPG · JPEG · עד 500MB לקובץ"; display: block; font-size: 12px; color: #5F6E82; margin-top: 6px;
 }}
 [data-testid="stFileUploaderDropzone"] button p {{ font-size: 0; }}
 [data-testid="stFileUploaderDropzone"] button p::after {{ content: "בחירה מהמחשב"; font-size: 14px; }}
@@ -136,30 +153,32 @@ div[class*="st-key-cardflag_"] {{
 /* Sidebar: brand, step navigation, batch list. */
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 4px; }}
 .lx-brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }}
-.lx-logo {{ width: 34px; height: 34px; border-radius: 9px; background: {APPROVED_COLOR};
-    display: flex; align-items: center; justify-content: center; }}
-.lx-name {{ font-weight: 700; font-size: 19px; line-height: 1.2; }}
-.lx-sub {{ font-size: 12px; color: #93A0BC; }}
-.lx-privacy {{ font-size: 12px; color: #8390AC; border-top: 1px solid #1E2944; padding-top: 14px; margin-top: 18px; }}
-.lx-empty {{ border: 1px dashed #243049; border-radius: 10px; padding: 16px 12px; font-size: 13px;
-    color: #8390AC; text-align: center; }}
+.lx-lab-logo {{ width: 56px; height: 56px; flex: none; }}
+.lx-partner {{ display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #DCE4EC; padding-top: 14px;
+    margin-top: 18px; font-size: 12px; color: #5F6E82; }}
+.lx-partner img {{ width: 170px; max-width: 100%; }}
+.lx-name {{ font-weight: 700; font-size: 20px; line-height: 1.2; color: #183060; }}
+.lx-sub {{ font-size: 12px; color: #5B6B80; }}
+.lx-privacy {{ font-size: 12px; color: #5F6E82; border-top: 1px solid #DCE4EC; padding-top: 14px; margin-top: 18px; }}
+.lx-empty {{ border: 1px dashed #C3CEDA; border-radius: 10px; padding: 16px 12px; font-size: 13px;
+    color: #5F6E82; text-align: center; }}
 [data-testid="stSidebar"] [class*="st-key-nav_"] button,
 [data-testid="stSidebar"] [class*="st-key-queue_"] button {{
-    width: 100%; justify-content: flex-start; border: none; background: transparent; color: #C7D0E2;
+    width: 100%; justify-content: flex-start; border: none; background: transparent; color: #2E3E55;
     min-height: 40px; padding: 6px 12px; border-radius: 8px;
 }}
 [data-testid="stSidebar"] [class*="st-key-nav_"] button:hover,
-[data-testid="stSidebar"] [class*="st-key-queue_"] button:hover {{ background: #172036; color: #E8EDF7; }}
-[data-testid="stSidebar"] [class*="st-key-nav_"] button:disabled {{ color: #5B6782; background: transparent; }}
+[data-testid="stSidebar"] [class*="st-key-queue_"] button:hover {{ background: #E6F2F8; color: #183060; }}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button:disabled {{ color: #9AA6B5; background: transparent; }}
 [data-testid="stSidebar"] [class*="st-key-nav_"] button::before {{
-    content: ""; width: 8px; height: 8px; border-radius: 50%; background: #243049; margin-inline-end: 10px; flex: none;
+    content: ""; width: 8px; height: 8px; border-radius: 50%; background: #C3CEDA; margin-inline-end: 10px; flex: none;
 }}
 [data-testid="stSidebar"] [class*="st-key-nav_"] button > div,
 [data-testid="stSidebar"] [class*="st-key-queue_"] button > div {{ flex: 1; min-width: 0; justify-content: flex-start; }}
 [data-testid="stSidebar"] [class*="st-key-queue_"] button {{ font-size: 13px; min-height: 36px; }}
 [data-testid="stSidebar"] [class*="st-key-queue_"] button::after {{
     content: ""; margin-inline-start: auto; min-width: 22px; height: 22px; border-radius: 999px; font-size: 11px;
-    font-weight: 600; display: inline-flex; align-items: center; justify-content: center; background: #172036;
+    font-weight: 600; display: inline-flex; align-items: center; justify-content: center; background: #E6F2F8;
 }}
 [data-testid="stSidebar"] [class*="st-key-queue_"] [data-testid="stMarkdownContainer"] p {{
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -167,78 +186,78 @@ div[class*="st-key-cardflag_"] {{
 
 /* Stat tiles and pipeline steps. */
 .lx-tiles {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 8px 0 20px; }}
-.lx-tile {{ background: #111829; border: 1px solid #1E2944; border-radius: 12px; padding: 16px 18px; }}
-.lx-tile.flag {{ background: #1A1508; border-color: #5C3D00; }}
-.lx-tile.ok {{ background: #0D1F1D; border-color: #1C4A44; }}
-.lx-tile-label {{ font-size: 13px; color: #93A0BC; }}
-.lx-tile.flag .lx-tile-label {{ color: #FFC15C; }}
+.lx-tile {{ background: #FFFFFF; border: 1px solid #DCE4EC; border-radius: 12px; padding: 16px 18px; }}
+.lx-tile.flag {{ background: #FFF6E5; border-color: #F5C77A; }}
+.lx-tile.ok {{ background: #EEF8F2; border-color: #B5DEC6; }}
+.lx-tile-label {{ font-size: 13px; color: #5B6B80; }}
+.lx-tile.flag .lx-tile-label {{ color: #9A5800; }}
 .lx-tile.ok .lx-tile-label {{ color: {APPROVED_COLOR}; }}
 .lx-tile-value {{ font-family: "JetBrains Mono", monospace; font-size: 32px; font-weight: 600; line-height: 1.3; }}
 .lx-tile.flag .lx-tile-value {{ color: {FLAG_COLOR}; }}
 .lx-tile.ok .lx-tile-value {{ color: {APPROVED_COLOR}; }}
-.lx-tile-note {{ font-size: 12px; color: #8390AC; }}
-.lx-tile.flag .lx-tile-note {{ color: #C9A86A; }}
-.lx-bar {{ height: 6px; background: #12302C; border-radius: 3px; overflow: hidden; margin-top: 8px; }}
+.lx-tile-note {{ font-size: 12px; color: #5F6E82; }}
+.lx-tile.flag .lx-tile-note {{ color: #8A6420; }}
+.lx-bar {{ height: 6px; background: #D3ECDD; border-radius: 3px; overflow: hidden; margin-top: 8px; }}
 .lx-bar > div {{ height: 100%; background: {APPROVED_COLOR}; }}
 .lx-steps {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }}
 .lx-step {{ display: flex; flex-direction: column; gap: 6px; border-radius: 12px; padding: 14px;
-    background: #111829; border: 1px solid #1E2944; }}
-.lx-step.active {{ background: #0D1F1D; border-color: {APPROVED_COLOR}; }}
+    background: #FFFFFF; border: 1px solid #DCE4EC; }}
+.lx-step.active {{ background: #E6F2F8; border-color: {ACCENT_COLOR}; }}
 .lx-step-num {{ width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center;
-    justify-content: center; font-size: 12px; font-weight: 600; background: #172036; color: #93A0BC; }}
-.lx-step.active .lx-step-num, .lx-step.done .lx-step-num {{ background: {APPROVED_COLOR}; color: #06221E; }}
+    justify-content: center; font-size: 12px; font-weight: 600; background: #E6F2F8; color: #5B6B80; }}
+.lx-step.active .lx-step-num, .lx-step.done .lx-step-num {{ background: {ACCENT_COLOR}; color: #FFFFFF; }}
 .lx-step-title {{ font-weight: 600; font-size: 14px; }}
-.lx-step-text {{ font-size: 12px; color: #93A0BC; line-height: 1.45; }}
-.lx-principle {{ font-size: 13px; color: #8390AC; margin-top: 24px; }}
+.lx-step-text {{ font-size: 12px; color: #5B6B80; line-height: 1.45; }}
+.lx-principle {{ font-size: 13px; color: #5F6E82; margin-top: 24px; }}
 .lx-principle span {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: {FLAG_COLOR};
     margin-inline-end: 8px; }}
 .lx-legend {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: {FLAG_COLOR};
     vertical-align: middle; margin-inline-end: 4px; }}
 /* Review screen: field cards, confidence chips, sticky action bar and form image. */
-div[class*="st-key-cardok_"] {{ background: #111829; }}
-div[class*="st-key-cardflag_"] {{ background: #1A1508 !important; }}
-div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 220px; object-fit: contain; background: #F4F2EC;
+div[class*="st-key-cardok_"] {{ background: #FFFFFF; }}
+div[class*="st-key-cardflag_"] {{ background: #FFF6E5 !important; }}
+div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 220px; object-fit: contain; background: #FFFFFF;
     border-radius: 8px; }}
 .lx-card-head {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; }}
 .lx-chip {{ font-size: 11px; font-weight: 600; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }}
-.lx-chip.ok {{ color: {APPROVED_COLOR}; background: #0D2A27; }}
-.lx-chip.warn {{ color: #FFC15C; background: #2A1E05; }}
+.lx-chip.ok {{ color: {APPROVED_COLOR}; background: #E3F4EA; }}
+.lx-chip.warn {{ color: #9A5800; background: #FFEBC7; }}
 .lx-chip.big {{ font-size: 12px; padding: 3px 10px; border: 1px solid currentColor; }}
 .flag-reason {{ font-size: 13px; margin-top: 6px; }}
 .lx-title-row {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }}
 .lx-title-row .lx-h1 {{ font-size: 30px; margin: 0; }}
-.lx-dim {{ color: #6F7C99; font-weight: 500; }}
+.lx-dim {{ color: #7A889B; font-weight: 500; }}
 .lx-mono {{ font-family: "JetBrains Mono", monospace; }}
 .lx-fields-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }}
 .lx-approved {{ font-weight: 600; color: {APPROVED_COLOR}; }}
 .lx-outline {{ display: inline-block; width: 12px; height: 12px; border: 2px solid {FLAG_COLOR}; border-radius: 3px;
     box-sizing: border-box; vertical-align: middle; margin-inline-end: 6px; }}
-.st-key-actionbar {{ position: sticky; bottom: 0; z-index: 5; background: #0E1422; border: 1px solid #1E2944;
+.st-key-actionbar {{ position: sticky; bottom: 0; z-index: 5; background: #FFFFFF; border: 1px solid #DCE4EC;
     border-radius: 14px; padding: 12px 14px; margin-top: 8px; }}
 .st-key-approve button {{ min-height: 50px; padding: 0 24px; border-radius: 12px; font-size: 16px;
-    box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+    box-shadow: 0 0 0 4px rgba(0, 119, 168, 0.15); }}
 .st-key-save button, .st-key-reopen button {{ min-height: 50px; border-radius: 12px; }}
 .st-key-force_approve button {{ background: {FLAG_COLOR}; color: #1A1100; border: none; font-weight: 600; min-height: 44px; }}
 [data-testid="stColumn"]:has(.st-key-formimage) {{ position: sticky; top: 16px; align-self: flex-start; }}
 /* Export screen. */
-.st-key-downloadcard, .st-key-waitingcard {{ background: #111829; border-radius: 16px; padding: 6px; }}
-.st-key-waitingcard {{ background: #1A1508; border-color: #5C3D00 !important; }}
+.st-key-downloadcard, .st-key-waitingcard {{ background: #FFFFFF; border-radius: 16px; padding: 6px; }}
+.st-key-waitingcard {{ background: #FFF6E5; border-color: #F5C77A !important; }}
 .lx-file {{ display: flex; align-items: center; gap: 14px; }}
-.lx-file-icon {{ width: 52px; height: 52px; border-radius: 12px; flex: none; background: #0D2A27 center / 26px no-repeat
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26' fill='none' stroke='%235EEAD4' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 3h9l5 5v15H7z'/%3E%3Cpath d='M16 3v5h5'/%3E%3Cpath d='M10.5 13l5 6M15.5 13l-5 6'/%3E%3C/svg%3E"); }}
+.lx-file-icon {{ width: 52px; height: 52px; border-radius: 12px; flex: none; background: #E6F2F8 center / 26px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26' fill='none' stroke='%230077A8' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 3h9l5 5v15H7z'/%3E%3Cpath d='M16 3v5h5'/%3E%3Cpath d='M10.5 13l5 6M15.5 13l-5 6'/%3E%3C/svg%3E"); }}
 .lx-file bdi {{ font-size: 15px; font-weight: 500; }}
 .st-key-download button {{ min-height: 56px; border-radius: 12px; font-size: 17px; }}
-.st-key-download button:not(:disabled) {{ box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
-.lx-ready {{ display: flex; flex-direction: column; gap: 10px; background: #0D1F1D; border: 1px solid #1C4A44;
+.st-key-download button:not(:disabled) {{ box-shadow: 0 0 0 4px rgba(0, 119, 168, 0.15); }}
+.lx-ready {{ display: flex; flex-direction: column; gap: 10px; background: #EEF8F2; border: 1px solid #B5DEC6;
     border-radius: 16px; padding: 22px; }}
 .lx-ready strong {{ font-size: 18px; color: {APPROVED_COLOR}; }}
-.lx-ready span {{ font-size: 14px; color: #A8C9C3; }}
+.lx-ready span {{ font-size: 14px; color: #3D6B55; }}
 .lx-waiting {{ display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 14px; }}
-.lx-waiting span {{ font-size: 13px; color: #C9B48A; }}
-.lx-waiting em {{ font-style: normal; font-size: 12px; color: #FFC15C; }}
-.st-key-waitingcard [data-testid="stAlertContainer"] {{ background: transparent; color: #FFC15C; font-weight: 600;
+.lx-waiting span {{ font-size: 13px; color: #8A6420; }}
+.lx-waiting em {{ font-style: normal; font-size: 12px; color: #9A5800; }}
+.st-key-waitingcard [data-testid="stAlertContainer"] {{ background: transparent; color: #9A5800; font-weight: 600;
     font-size: 17px; padding: 4px 4px 8px; }}
-[class*="st-key-open_"] button {{ border-color: #5C3D00; color: #FFC15C; background: transparent; min-height: 36px; }}
+[class*="st-key-open_"] button {{ border-color: #F5C77A; color: #9A5800; background: transparent; min-height: 36px; }}
 </style>
 """
 
@@ -424,7 +443,7 @@ def screen_summary() -> None:
   <div class="lx-tile flag"><div class="lx-tile-label">אזהרות טופס</div><div class="lx-tile-value">{warnings}</div>
     <div class="lx-tile-note">ב־{warning_forms} טפסים · פיצול או חילוץ</div></div>
   <div class="lx-tile ok"><div class="lx-tile-label">אושרו</div>
-    <div class="lx-tile-value">{approved}<span style="font-size:18px;color:#3E8F84"> / {len(items)}</span></div>
+    <div class="lx-tile-value">{approved}<span style="font-size:18px;color:#5E9C7E"> / {len(items)}</span></div>
     <div class="lx-bar"><div style="width:{share}%"></div></div></div>
 </div>""", unsafe_allow_html=True)
 
@@ -448,7 +467,7 @@ def screen_summary() -> None:
                 out.append("")
         return out
 
-    st.markdown('<div class="lx-section" style="font-size:18px;font-weight:600;color:#E8EDF7">כל הטפסים</div>'
+    st.markdown('<div class="lx-section" style="font-size:18px;font-weight:600;color:#183060">כל הטפסים</div>'
                 '<span class="lx-muted">לחצו על שורה כדי לפתוח את הטופס · <span class="lx-legend"></span>'
                 'דורש בדיקה</span>', unsafe_allow_html=True)
     event = st.dataframe(view.style.apply(colour, axis=1), hide_index=True, on_select="rerun",
@@ -735,22 +754,22 @@ def _sidebar_css(items: list, screen: str, pos: int) -> str:
     with CSS on each button's key class ("st-key-<key>").
     """
     order = list(SCREENS)
-    rules = [f'[data-testid="stSidebar"] div.st-key-nav_{screen} button {{ background: #172036; color: #E8EDF7; '
+    rules = [f'[data-testid="stSidebar"] div.st-key-nav_{screen} button {{ background: #E6F2F8; color: #183060; '
              f'font-weight: 600; }}',
              f'[data-testid="stSidebar"] div.st-key-nav_{screen} button::before {{ background: transparent; '
-             f'border: 2px solid {APPROVED_COLOR}; box-sizing: border-box; }}']
+             f'border: 2px solid {ACCENT_COLOR}; box-sizing: border-box; }}']
     if items:
-        rules += [f'[data-testid="stSidebar"] div.st-key-nav_{s} button::before {{ background: {APPROVED_COLOR}; }}'
+        rules += [f'[data-testid="stSidebar"] div.st-key-nav_{s} button::before {{ background: {ACCENT_COLOR}; }}'
                   for s in order[:order.index(screen)]]
     for i, r in enumerate(items):
         sel = f'[data-testid="stSidebar"] div.st-key-queue_{i} button'
         issues = len(r.open_flags()) + len(r.record.split_flags) + bool(r.record.error)
         if r.approved:
-            rules.append(f'{sel}::after {{ content: "✓"; background: #0D2A27; color: {APPROVED_COLOR}; }}')
+            rules.append(f'{sel}::after {{ content: "✓"; background: #E3F4EA; color: {APPROVED_COLOR}; }}')
         elif issues:
-            rules.append(f'{sel}::after {{ content: "{issues}"; background: #2A1E05; color: #FFC15C; }}')
+            rules.append(f'{sel}::after {{ content: "{issues}"; background: #FFEBC7; color: #9A5800; }}')
         if screen == "review" and i == pos:
-            rules.append(f'{sel} {{ background: #172036; color: #E8EDF7; box-shadow: inset 0 0 0 1px #2A3654; }}')
+            rules.append(f'{sel} {{ background: #E6F2F8; color: #183060; box-shadow: inset 0 0 0 1px #9CC9DE; }}')
     return "<style>" + "\n".join(rules) + "</style>"
 
 
@@ -768,7 +787,7 @@ def sidebar(has_results: bool) -> None:
                     if items else '<div class="lx-section">טפסים שהועלו</div>', unsafe_allow_html=True)
         if not items:
             st.markdown('<div class="lx-empty">עדיין אין טפסים.<br>הטפסים יופיעו כאן אחרי החילוץ.</div>'
-                        + PRIVACY_NOTE, unsafe_allow_html=True)
+                        + PRIVACY_NOTE + PARTNER_HTML, unsafe_allow_html=True)
             return
         for i, r in enumerate(items):
             st.button(f"{i + 1} {r.record.metadata.get('form_type', '') or 'לא מזוהה'}", key=f"queue_{i}",
@@ -778,6 +797,7 @@ def sidebar(has_results: bool) -> None:
                      width="stretch"):
             clear_all()
             st.rerun()
+        st.markdown(PARTNER_HTML, unsafe_allow_html=True)
 
 
 def main() -> None:

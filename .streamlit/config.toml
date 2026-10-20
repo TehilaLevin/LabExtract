@@ -11,24 +11,25 @@ gatherUsageStats = false
 # Hide the developer toolbar (Deploy button) in the lab.
 toolbarMode = "minimal"
 
-# "Control room" design (direction B): dark navy ground, mint for actions and approvals,
-# orange (#FFA500, constants.FLAG_COLOR) reserved for fields that need review.
+# Light, institutional design in the colours of the partner logos: Ministry of Health navy (#183060) for
+# text, Central Virology Laboratory blue (#0077A8) for actions, green for approvals, and orange
+# (#FFA500, constants.FLAG_COLOR) reserved for fields that need review.
 [theme]
-base = "dark"
-primaryColor = "#5EEAD4"
-backgroundColor = "#0A0F1A"
-secondaryBackgroundColor = "#111829"
-textColor = "#E8EDF7"
-linkColor = "#5EEAD4"
-borderColor = "#1E2944"
+base = "light"
+primaryColor = "#0077A8"
+backgroundColor = "#F4F7FA"
+secondaryBackgroundColor = "#EEF3F8"
+textColor = "#1B2A41"
+linkColor = "#0077A8"
+borderColor = "#DCE4EC"
 showWidgetBorder = true
 baseRadius = "10px"
-font = "Rubik:https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap"
+font = "Heebo:https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&display=swap"
 codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
-dataframeHeaderBackgroundColor = "#0E1422"
-dataframeBorderColor = "#1E2944"
+dataframeHeaderBackgroundColor = "#EEF3F8"
+dataframeBorderColor = "#DCE4EC"
 showSidebarBorder = true
 
 [theme.sidebar]
-backgroundColor = "#0E1422"
-secondaryBackgroundColor = "#172036"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F7FA"
