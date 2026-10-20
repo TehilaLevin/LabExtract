@@ -150,3 +150,42 @@ def test_export_one_row_per_form_with_status_and_highlight():
     assert list(df[REVIEW_STATUS_KEY]) == [REVIEW_STATUS_APPROVED, REVIEW_STATUS_PENDING]
     # approved form: nothing highlighted; unapproved form: its flagged field and its status
     assert highlight == {(1, "received_date"), (1, REVIEW_STATUS_KEY)}
+
+
+def test_export_one_row_per_commitment():
+    """3 central numbers + 2 commitment numbers -> 2 rows; the central numbers stay in one cell, the
+    single-value fields repeat, the ID keeps its leading zeros."""
+    review = rs.FormReview(_record(1, flags={"id_number": "low_confidence"}, id_number="000000018",
+                                   central_numbers="937309, 937310, 937311",
+                                   commitment_numbers="50364186, 50364187"))
+    df, highlight = rs.export_frame([review])
+    assert len(df) == 2
+    assert list(df["commitment_numbers"]) == ["50364186", "50364187"]
+    assert set(df["central_numbers"]) == {"937309, 937310, 937311"}
+    assert set(df["id_number"]) == {"000000018"} and set(df["last_name"]) == {"ישראלי"}
+    assert set(df[REVIEW_STATUS_KEY]) == {REVIEW_STATUS_PENDING}
+    # the flag follows the form to both rows
+    assert {(0, "id_number"), (1, "id_number"), (0, REVIEW_STATUS_KEY), (1, REVIEW_STATUS_KEY)} <= highlight
+
+
+def test_export_form_without_commitment_gives_one_flagged_row():
+    pending = rs.FormReview(_record(1, commitment_numbers=""))
+    approved = rs.FormReview(_record(2, commitment_numbers=""))
+    approved.approved = True
+    df, highlight = rs.export_frame([pending, approved])
+    assert len(df) == 2 and list(df["commitment_numbers"]) == ["", ""]
+    assert (0, "commitment_numbers") in highlight          # empty and flagged while not approved
+    assert (1, "commitment_numbers") not in highlight      # approved: the reviewer accepted the empty cell
+
+
+def test_export_cells_after_split_are_text_with_leading_zeros():
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from src.excel_exporter import to_xlsx_bytes
+
+    review = rs.FormReview(_record(1, id_number="001122334", commitment_numbers="007, 008"))
+    df, highlight = rs.export_frame([review])
+    ws = load_workbook(BytesIO(to_xlsx_bytes(df, highlight))).active
+    assert ws.max_row == 3                                  # header + 2 commitments
+    cells = {c.value for row in ws.iter_rows(min_row=2) for c in row}
+    assert {"001122334", "007", "008"} <= cells

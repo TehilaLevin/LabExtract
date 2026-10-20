@@ -6,7 +6,7 @@ One FormReview per extracted record. The record is never changed: the reviewer's
   suggestion is NEVER a value: the reviewer has to copy it into the field themselves.
 - Approving a form re-validates every saved value. Failed validation (bad ID check digit, invalid date,
   sender not in the closed list...) needs an explicit "approve anyway"; empty fields are only reported.
-- Export: one row per form. A flagged cell is highlighted while its form is not approved; after approval
+- Export: one row per commitment number (a form without one still gives a row). A flagged cell is highlighted while its form is not approved; after approval
   the reviewer has seen and accepted every value, including the ones left empty.
 """
 import re
@@ -26,6 +26,7 @@ from src.constants import (
     REVIEW_STATUS_KEY,
     REVIEW_STATUS_PENDING,
 )
+from src.excel_exporter import expand_per_commitment
 from src.validators import (
     check_received_date,
     format_number_list,
@@ -46,7 +47,6 @@ class FormReview:
     record: object                                # record_builder.Record (never mutated)
     edits: dict = field(default_factory=dict)     # field key -> value saved by the reviewer
     approved: bool = False
-    store_id: Optional[int] = None                # row id in record_store (None: not saved)
 
     @property
     def form_index(self) -> int:
@@ -174,7 +174,7 @@ def summary_frame(reviews: list) -> pd.DataFrame:
 
 
 def export_frame(reviews: list) -> tuple:
-    """(DataFrame, highlight) for the export: one row per form, fields + metadata + review status.
+    """(DataFrame, highlight) for the export: one row per commitment, fields + metadata + review status.
 
     highlight is a set of (row position, column key) cells to fill orange: flagged fields of forms that
     are not approved. Suggestions, crops and images are never part of the export.
@@ -189,4 +189,4 @@ def export_frame(reviews: list) -> tuple:
         highlight |= {(pos, key) for key in r.open_flags()}
         if not r.approved:
             highlight.add((pos, REVIEW_STATUS_KEY))
-    return pd.DataFrame(rows, columns=columns), highlight
+    return expand_per_commitment(pd.DataFrame(rows, columns=columns), highlight)

@@ -163,44 +163,42 @@ def test_export_open_button_jumps_to_the_unapproved_form():
     assert at.session_state["screen"] == "review" and at.session_state["pos"] == 1
 
 
-def test_records_screen_lists_saved_records():
-    from src import record_store as store
+def test_approving_a_form_saves_it_to_the_database():
+    from src import record_store
 
-    reviews = rs.new_session([_record(1), _record(2, flags={"id_number": "invalid_id"}, id_number="000000019")])
-    store.save_run(reviews)
     at = AppTest.from_file(APP, default_timeout=30)
-    at.session_state["screen"] = "records"
+    at.session_state["reviews"] = rs.new_session([_record(1), _record(2)])
+    at.session_state["batch_id"] = "b1"
+    at.session_state["screen"] = "review"
+    at.session_state["pos"] = 0
+    at.run()
+    next(b for b in at.button if b.key == "approve").click()
     at.run()
     assert not at.exception
-    assert len(at.dataframe[0].value) == 2
+    assert record_store.counts() == {"total": 1, "approved": 1, "pending": 0}
+    at.session_state["screen"] = "database"
+    assert not at.run().exception
 
 
-def test_saved_run_is_reopened_with_values_crops_and_status():
-    from src import record_store as store
+def test_database_screen_opens_without_results():
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["screen"] = "database"
+    at.run()
+    assert not at.exception
+
+
+def test_saved_form_reopens_with_its_values_and_a_crop_next_to_every_field():
+    from src import record_store
 
     reviews = rs.new_session([_record(1), _record(2)])
-    run_id = store.save_run(reviews)
     rs.approve(reviews[1], {"first_name": "יעל"})
-    store.update_review(reviews[1])
+    record_store.save_all(reviews, "b1")
     at = AppTest.from_file(APP, default_timeout=30)
-    at.session_state["reviews"] = store.load_run(run_id)
+    at.session_state["reviews"] = record_store.load_batch("b1")
+    at.session_state["batch_id"] = "b1"
     at.session_state["screen"] = "review"
     at.session_state["pos"] = 1
     at.run()
     assert not at.exception
     assert _input(at, "first_name").value == "יעל"
     assert len(at.image) >= len(FIELD_KEYS)  # a crop next to every field, plus the page image
-
-
-def test_approval_on_the_review_screen_is_saved_in_the_system():
-    from src import record_store as store
-
-    reviews = rs.new_session([_record(1), _record(2)])
-    run_id = store.save_run(reviews)
-    at = AppTest.from_file(APP, default_timeout=30)
-    at.session_state["reviews"] = reviews
-    at.session_state["screen"] = "review"
-    at.run()
-    at.button(key="approve").click().run()
-    assert not at.exception
-    assert [r.approved for r in store.load_run(run_id)] == [True, False]

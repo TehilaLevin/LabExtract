@@ -14,20 +14,6 @@ streamlit run app.py            # opens http://localhost:8501
 
 `.env` must hold `CLAUDE_API_KEY` (or `ANTHROPIC_API_KEY`; see `.env.example`); PDFs need Poppler.
 
-## Saved records (`src/record_store.py`)
-
-Every extracted form is saved in the system as one record per commitment: all seven fields, the review
-flags, the reviewer's corrections, the approval status, and the images shown on the review screen (the
-crop of each field and the page previews). Records are saved automatically after each extraction and
-updated on every approve / save / reopen.
-
-- The **Records** screen (רשומות) lists every saved record with search and a status filter. Clicking a
-  record opens its run on the review screen, with the cropped image from the commitment form next to
-  every field, ready to correct and approve.
-- Storage: a local SQLite file, `data/records/labextract.db` (override with `RECORDS_DB`), git-ignored.
-  It holds personal data: keep it on the lab computer only. Records can be deleted from the Records
-  screen. Excel export stays available as an optional extra.
-
 ## Model: Claude
 
 Claude (`claude-opus-5-5` by default) is the only model provider. Every model call (orientation, splitting,
@@ -98,12 +84,23 @@ measured on the samples may not carry over.
    filled in: the reading is shown as "הצעה – לא מאומת" for the reviewer to copy in only if it is right. The sender
    is chosen from the closed list. "אשר טופס ועבור לבא" re-validates the form: a value that still fails validation
    (ID check digit, date, sender) needs an explicit "אשר בכל זאת"; empty fields are reported, never blocking.
-4. **Export** – Excel with Hebrew headers, right-to-left sheet, one row per form and a review-status column.
+4. **Export** – Excel with Hebrew headers, right-to-left sheet, **one row per commitment number** (single-value fields repeat on each row; all central numbers
+   of the form share one cell; a form without a commitment number still gives one row, flagged) and a review-status column.
    Flagged cells of forms that were not approved are orange; exporting while forms are unapproved shows them
    and needs a confirmation.
 
-Privacy: uploads, results, crops and page previews live only in the browser session's memory (`st.session_state`),
-never in a shared cache, a log or on disk; the pipeline's temp folder is deleted after every run. "נקה הכל" drops
+5. **Database ("מאגר")** – every form is saved to a local SQLite file (`data/db/labextract.db`, `src/record_store.py`)
+   when extracted (pending) and updated on every save / approval, so records survive closing the browser. The screen
+   searches all fields, filters by status and sender, downloads the result as Excel (open flags of unapproved forms
+   in orange), opens a saved form on the review screen ("פתח") with the cropped image next to every field, and
+   deletes everything ("מחק את כל המאגר"). Stored: field values, metadata, status, reason codes of open flags, the
+   engine's record and the reviewer's edits, and the field crops and page previews (so a saved form can be reopened).
+   Not stored: the uploaded files. `DB_ENABLED=false` turns it off.
+
+Privacy: uploads live only in the browser session's memory (`st.session_state`), never in a shared cache, a log
+or on disk; the pipeline's temp folder is deleted after every run. The one exception
+is the database above: it holds patient data on disk (git-ignored, local only), so keep the folder on an
+access-controlled machine and use "מחק את כל המאגר" before sharing the project. "נקה הכל" drops
 everything. `.streamlit/config.toml` serves the app on `localhost` only and turns off Streamlit's usage statistics;
 open it to other lab computers only deliberately, on a trusted network.
 
@@ -125,6 +122,17 @@ typing does not rerun the script; saved values are kept in `src/review_session.p
   draft-labelled forms Opus 5.5 with thinking (no crops) got 69/105 fields right with 0 silent errors; names were
   the weak field (1/15).
 - Earlier baseline: Gemini 3.6 Flash scored 29/35 on 5 forms; replaced by Claude for accuracy and privacy.
+
+## What the lab needs in order to adopt it
+
+- **A retention and automatic-deletion policy.** The database (`data/db/labextract.db`) keeps patient data until
+  someone deletes it manually with "מחק את כל המאגר"; there is no automatic deletion. Real use requires the lab to
+  define how long records may be kept and to automate their deletion.
+- **Disk encryption.** SQLite is not encrypted at rest; the machine's disk must be encrypted and access to the
+  folder restricted.
+- An Anthropic API key and an agreement that form images may be sent to the model provider.
+- Verification of the approved-senders list and a ground-truth set labelled on real forms.
+- Replacing the local file with the lab's own system (API or database) for production.
 
 ## Development cache (`DEV_CACHE`) – development only
 

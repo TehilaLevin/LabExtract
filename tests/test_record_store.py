@@ -1,74 +1,151 @@
-"""Saved records: a run is stored with its images, edits and approval, and comes back unchanged."""
-from io import BytesIO
-
-from PIL import Image
+"""SQLite record store: upsert, search, filters, export frame, delete. Uses the temp DB from conftest."""
+import pytest
 
 from src import record_builder as rb
 from src import record_store as store
 from src import review_session as rs
-from src.constants import FIELD_KEYS
-from src.field_crops import PagePreview, SourceCrop
+from src.constants import FIELD_KEYS, REVIEW_STATUS_APPROVED, REVIEW_STATUS_KEY
+
+VALID_ID = "000000018"
+
+
+def _review(index, sender="מכבי", flags=None, **values):
+    base = {"first_name": "ישראל", "last_name": "ישראלי", "id_number": VALID_ID, "central_numbers": "937309, 937310",
+            "received_date": "01/10/2026", "sending_entity": sender, "commitment_numbers": "50364186"}
+    base.update(values)
+    record = rb.Record(index, base, dict(flags or {}), {k: 0.9 for k in FIELD_KEYS},
+                       {"source_file": "a.pdf", "page_numbers": str(index), "form_type": "טופס"})
+    return rs.FormReview(record)
+
+
+def test_save_is_an_upsert_and_tracks_status():
+    review = _review(1, flags={"first_name": "missing"})
+    store.save_review(review, "b1")
+    store.save_review(review, "b1")
+    assert store.counts() == {"total": 1, "approved": 0, "pending": 1}
+    review.approved = True
+    store.save_review(review, "b1")
+    assert store.counts() == {"total": 1, "approved": 1, "pending": 0}
+    row = store.search().iloc[0]
+    assert row["status"] == store.STATUS_APPROVED and row["open_flags"] == {}
+
+
+def test_same_form_index_in_another_batch_is_a_new_row():
+    store.save_all([_review(1), _review(2)], "b1")
+    store.save_all([_review(1)], "b2")
+    assert store.counts()["total"] == 3
+
+
+def test_edits_are_stored_not_the_engine_value():
+    review = _review(1)
+    review.edits["first_name"] = "דנה"
+    store.save_review(review, "b1")
+    assert store.search().iloc[0]["first_name"] == "דנה"
+
+
+def test_search_by_text_status_and_sender():
+    a, b = _review(1, sender="מכבי"), _review(2, sender="כללית", first_name="דנה", central_numbers="947000")
+    b.approved = True
+    store.save_all([a, b], "b1")
+    assert len(store.search("937310")) == 1
+    assert store.search("דנה").iloc[0]["sending_entity"] == "כללית"
+    assert len(store.search(status=store.STATUS_APPROVED)) == 1
+    assert store.search(sender="מכבי").iloc[0]["central_numbers"] == "937309, 937310"
+    assert store.search("%").empty and store.search("no such value").empty
+    assert store.senders() == ["מכבי", "כללית"] or set(store.senders()) == {"מכבי", "כללית"}
+
+
+def test_export_frame_highlights_open_flags_of_pending_forms_only():
+    pending = _review(1, flags={"id_number": "invalid_id"})
+    done = _review(2, flags={"id_number": "invalid_id"})
+    done.approved = True
+    store.save_all([pending, done], "b1")
+    stored = store.search().sort_values("id").reset_index(drop=True)
+    frame, highlight = store.export_frame(stored)
+    assert (0, "id_number") in highlight and (0, REVIEW_STATUS_KEY) in highlight
+    assert not any(row == 1 for row, _ in highlight)
+    assert frame.loc[1, REVIEW_STATUS_KEY] == REVIEW_STATUS_APPROVED
+
+
+def test_delete_and_delete_all():
+    store.save_all([_review(1), _review(2), _review(3)], "b1")
+    ids = list(store.search()["id"])
+    assert store.delete(ids[:1]) == 1 and store.delete([]) == 0
+    assert store.delete_all() == 2 and store.counts()["total"] == 0
+
+
+def test_empty_database_search_has_columns():
+    frame = store.search()
+    assert frame.empty and "first_name" in frame.columns
+
+
+def test_no_images_or_suggestions_are_stored():
+    import sqlite3
+    store.save_review(_review(1), "b1")
+    conn = sqlite3.connect(store.config.DB_PATH)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(forms)")}
+    conn.close()
+    assert not any(w in c for c in cols for w in ("image", "crop", "suggest", "note"))
 
 
 def _jpeg(colour="white"):
+    from io import BytesIO
+
+    from PIL import Image
+
     buf = BytesIO()
     Image.new("RGB", (30, 20), colour).save(buf, "JPEG")
     return buf.getvalue()
 
 
-def _record(index, **flags):
-    values = {k: "" for k in FIELD_KEYS}
-    values.update(first_name="ישראל", id_number="000000018", central_numbers="482913, 482914")
-    return rb.Record(index, values, dict(flags), {k: 0.95 for k in FIELD_KEYS},
-                     {"source_file": "batch.pdf", "page_numbers": f"{index}, {index + 1}", "form_type": "מכבי – התחייבות"},
-                     suggestions={"last_name": "ישראלי"},
-                     field_crops={"id_number": [SourceCrop(1, (100, 200, 150, 400), _jpeg("red"))],
-                                  "central_numbers": [SourceCrop(1, (1, 2, 3, 4), _jpeg("blue")),
-                                                      SourceCrop(2, (5, 6, 7, 8), _jpeg("green"))]},
-                     page_images=[PagePreview(index, _jpeg()), PagePreview(index + 1, _jpeg("gray"))])
+def test_saved_batch_reopens_with_crops_page_previews_and_edits():
+    from src.field_crops import PagePreview, SourceCrop
+
+    review = _review(1, flags={"last_name": "name_unverified"}, last_name="")
+    review.record.suggestions["last_name"] = "ישראלי"
+    review.record.field_crops["central_numbers"] = [SourceCrop(1, (1, 2, 3, 4), _jpeg("red")),
+                                                    SourceCrop(2, (5, 6, 7, 8), _jpeg("blue"))]
+    review.record.page_images.extend([PagePreview(7, _jpeg()), PagePreview(8, _jpeg("gray"))])
+    store.save_review(review, "b1")
+    review.edits["last_name"] = "ישראלי"
+    store.save_review(review, "b1")  # an update keeps the images written on insert
+
+    loaded = store.load_batch("b1")
+    assert len(loaded) == 1
+    again = loaded[0]
+    assert again.value("last_name") == "ישראלי" and again.record.flags == {"last_name": "name_unverified"}
+    assert again.record.suggestions == {"last_name": "ישראלי"}
+    crops = again.record.field_crops["central_numbers"]
+    assert [c.page for c in crops] == [1, 2] and crops[1].box == (5, 6, 7, 8)
+    assert crops[0].jpeg == review.record.field_crops["central_numbers"][0].jpeg
+    assert [p.page_number for p in again.record.page_images] == [7, 8]
 
 
-def test_run_round_trip_keeps_values_flags_and_images(tmp_path):
-    db = tmp_path / "records.db"
-    reviews = rs.new_session([_record(1, last_name="name_unverified"), _record(3)])
-    run_id = store.save_run(reviews, db)
-    assert [r.store_id for r in reviews] == [1, 2]
+def test_delete_removes_the_images_too():
+    from src import config
+    from src.field_crops import SourceCrop
 
-    loaded = store.load_run(run_id, db)
-    assert [r.form_index for r in loaded] == [1, 3]
-    first = loaded[0].record
-    assert first.values == reviews[0].record.values and first.flags == {"last_name": "name_unverified"}
-    assert first.suggestions == {"last_name": "ישראלי"}
-    assert [c.page for c in first.field_crops["central_numbers"]] == [1, 2]
-    assert first.field_crops["id_number"][0].box == (100, 200, 150, 400)
-    assert first.field_crops["id_number"][0].jpeg == reviews[0].record.field_crops["id_number"][0].jpeg
-    assert [p.page_number for p in first.page_images] == [1, 2]
+    review = _review(1)
+    review.record.field_crops["id_number"] = [SourceCrop(1, (1, 2, 3, 4), _jpeg())]
+    store.save_review(review, "b1")
+    store.delete(list(store.search()["id"]))
+    with store._connect(config.DB_PATH) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 0
 
 
-def test_edits_and_approval_are_saved(tmp_path):
-    db = tmp_path / "records.db"
-    reviews = rs.new_session([_record(1)])
-    run_id = store.save_run(reviews, db)
-    rs.approve(reviews[0], {"last_name": "ישראלי"})
-    store.update_review(reviews[0], db)
+def test_database_from_before_the_images_is_upgraded_in_place():
+    import sqlite3
 
-    loaded = store.load_run(run_id, db)[0]
-    assert loaded.approved and loaded.value("last_name") == "ישראלי"
-    listed = store.list_records(db)
-    assert listed[0]["approved"] and listed[0]["review"].value("last_name") == "ישראלי"
+    from src import config
 
-
-def test_unsaved_review_is_not_written(tmp_path):
-    db = tmp_path / "records.db"
-    store.update_review(rs.new_session([_record(1)])[0], db)
-    assert store.list_records(db) == []
-
-
-def test_delete_removes_records_and_images(tmp_path):
-    db = tmp_path / "records.db"
-    reviews = rs.new_session([_record(1), _record(2)])
-    store.save_run(reviews, db)
-    assert store.delete_records([reviews[0].store_id], db) == 1
-    assert [r["id"] for r in store.list_records(db)] == [reviews[1].store_id]
-    with store.connect(db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM images WHERE record_id = ?", (reviews[0].store_id,)).fetchone()[0] == 0
+    config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    old = sqlite3.connect(config.DB_PATH)
+    old.execute("CREATE TABLE forms (id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL, "
+                "form_index INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', open_flags TEXT NOT NULL "
+                "DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, approved_at TEXT, "
+                + ", ".join(f"{c} TEXT NOT NULL DEFAULT ''" for c in store._COLUMNS)
+                + ", UNIQUE (batch_id, form_index))")
+    old.commit()
+    old.close()
+    store.save_review(_review(1), "b1")
+    assert store.counts()["total"] == 1 and len(store.load_batch("b1")) == 1

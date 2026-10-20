@@ -138,6 +138,19 @@ These forms represent real patient data in production. Therefore:
 - Send to the API only what is needed (the form images), nothing else.
 - Do not log personal data (names, ID numbers) to the console or log files.
 - Delete files in data/temp/ after each run. Do not save uploads to disk beyond what processing needs.
+
+Local database (approved by the user, replaces the old rule "nothing personal is stored"):
+- The app keeps a local SQLite file, data/db/labextract.db (git-ignored), so records survive closing the browser.
+- STORED: the 7 field values as exported, the form details (source file, page numbers, form type), the review
+  status and the reason codes of open flags (codes only).
+- ALSO STORED (approved by the user, so a saved form can be opened again with the cropped image next to every
+  field): the engine's record (values, flags, confidences, suggestions, alternatives, notes, raw text), the
+  reviewer's edits, and the field crops and page previews (images table). Rows and their images are deleted together.
+- NEVER STORED: the uploaded files themselves (only the crops and page previews derived from them).
+- There is NO automatic deletion. The only deletion is the manual "מחק את כל המאגר" button (with a confirmation
+  checkbox). Do not add automatic deletion unless the user asks.
+- SQLite is NOT encrypted at rest: it relies on disk encryption and access control of the machine.
+- Still no personal data in logs or the console; the database file is never committed, and tests use a temp DB.
 - Never commit sample files, output files or keys.
 
 Exception – chat reports on the sample files only:

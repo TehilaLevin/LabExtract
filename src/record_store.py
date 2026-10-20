@@ -1,40 +1,57 @@
-"""Saved records: every extracted form is kept in a local SQLite database, one row per commitment.
+"""Local SQLite store for reviewed records (pure Python, no Streamlit).
 
-A row holds the engine's record (values, flags, confidences, metadata and the reading aids), the reviewer's
-corrections and the approval status. The images shown on the review screen - the crop of each field and
-the page previews - are kept with it, so a saved record can be opened later with a crop next to every field.
+One row per form, keyed by (batch_id, form_index), so saving the same form again updates it. Every form is
+saved as pending when extracted and updated when the reviewer saves or approves it, so the lab can search
+and filter what was approved and what still waits, across sessions.
 
-Privacy: the database holds personal data. It lives in config.RECORDS_DB (data/records/, git-ignored) on
-the lab computer only, is never logged or sent anywhere, and rows are removed with delete_records.
+Stored: the 7 field values as the exporter would write them, the 3 metadata columns, the review status and
+the reason codes of the flags still open. So that a saved form can be opened again on the review screen
+with the cropped image next to every field (approved by the user), each row also keeps the engine's record
+(record_json: values, flags, confidences and the reading aids), the reviewer's edits, and - in the images
+table - the field crops and page previews. The file holds personal data: it lives in data/db/ (git-ignored),
+is opened by this process only, and `delete` / `delete_all` remove rows with their images.
+DB_ENABLED=false turns the store off.
 """
 import json
 import sqlite3
-import uuid
 from contextlib import closing
 from dataclasses import fields
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
-from src import config
-from src.constants import FIELD_KEYS
-from src.field_crops import PagePreview, SourceCrop
-from src.record_builder import Record
-from src.review_session import FormReview
+import pandas as pd
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS records (
+from src import config
+from src.excel_exporter import expand_per_commitment
+from src.constants import (
+    FIELD_KEYS,
+    METADATA_KEYS,
+    REVIEW_STATUS_APPROVED,
+    REVIEW_STATUS_KEY,
+    REVIEW_STATUS_PENDING,
+)
+
+STATUS_APPROVED = "approved"
+STATUS_PENDING = "pending"
+_COLUMNS = (*FIELD_KEYS, *METADATA_KEYS)
+_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS forms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT NOT NULL,            -- one extraction run (the files uploaded together)
-    position INTEGER NOT NULL,       -- order of the form within its run
+    batch_id TEXT NOT NULL,
+    form_index INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT '{STATUS_PENDING}',
+    open_flags TEXT NOT NULL DEFAULT '{{}}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    approved INTEGER NOT NULL DEFAULT 0,
-    record_json TEXT NOT NULL,       -- record_builder.Record without its images
-    edits_json TEXT NOT NULL DEFAULT '{}'
+    approved_at TEXT,
+    {", ".join(f"{c} TEXT NOT NULL DEFAULT ''" for c in _COLUMNS)},
+    record_json TEXT NOT NULL DEFAULT '',
+    edits_json TEXT NOT NULL DEFAULT '{{}}',
+    UNIQUE (batch_id, form_index)
 );
+CREATE INDEX IF NOT EXISTS idx_forms_status ON forms (status);
 CREATE TABLE IF NOT EXISTS images (
-    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+    form_id INTEGER NOT NULL REFERENCES forms(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,              -- 'crop' (one field) or 'page' (page preview)
     field TEXT,
     page INTEGER NOT NULL,           -- crop: page within the form; page: page number in the source file
@@ -42,108 +59,171 @@ CREATE TABLE IF NOT EXISTS images (
     seq INTEGER NOT NULL,
     jpeg BLOB NOT NULL
 );
-CREATE INDEX IF NOT EXISTS images_record ON images(record_id);
+CREATE INDEX IF NOT EXISTS idx_images_form ON images (form_id);
 """
+# Columns added after the first release: added to an existing database file when it is opened.
+_ADDED_COLUMNS = {"record_json": "TEXT NOT NULL DEFAULT ''", "edits_json": "TEXT NOT NULL DEFAULT '{}'"}
 _IMAGE_FIELDS = ("field_crops", "page_images")
+
+
+def _connect(path=None) -> sqlite3.Connection:
+    path = path or config.DB_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(forms)")}
+    if existing:
+        for column, kind in _ADDED_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE forms ADD COLUMN {column} {kind}")
+    conn.executescript(_SCHEMA)
+    return conn
 
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def connect(path: Optional[Path] = None) -> sqlite3.Connection:
-    path = Path(path or config.RECORDS_DB)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(SCHEMA)
-    return conn
-
-
-def _record_json(record: Record) -> str:
-    data = {f.name: getattr(record, f.name) for f in fields(record) if f.name not in _IMAGE_FIELDS}
-    return json.dumps(data, ensure_ascii=False, default=str)
-
-
-def _insert(conn: sqlite3.Connection, review: FormReview, run_id: str, position: int) -> int:
+def save_review(review, batch_id: str, path=None) -> None:
+    """Insert or update one reviewed form (a review_session.FormReview) as pending or approved."""
+    values = {key: review.value(key) for key in FIELD_KEYS}
+    values.update({key: str(review.record.metadata.get(key, "")) for key in METADATA_KEYS})
     now = _now()
-    cur = conn.execute(
-        "INSERT INTO records (run_id, position, created_at, updated_at, approved, record_json, edits_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (run_id, position, now, now, int(review.approved), _record_json(review.record),
-         json.dumps(review.edits, ensure_ascii=False)))
-    record_id = cur.lastrowid
+    status = STATUS_APPROVED if review.approved else STATUS_PENDING
+    flags = json.dumps(review.open_flags(), sort_keys=True)
+    record = {f.name: getattr(review.record, f.name) for f in fields(review.record) if f.name not in _IMAGE_FIELDS}
+    record_json = json.dumps(record, ensure_ascii=False, default=str)
+    edits_json = json.dumps(review.edits, ensure_ascii=False)
+    cols = ", ".join(_COLUMNS)
+    marks = ", ".join("?" for _ in _COLUMNS)
+    updates = ", ".join(f"{c}=excluded.{c}" for c in _COLUMNS)
+    with closing(_connect(path)) as conn, conn:
+        conn.execute(
+            f"INSERT INTO forms (batch_id, form_index, status, open_flags, created_at, updated_at, approved_at, "
+            f"record_json, edits_json, {cols}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {marks}) "
+            f"ON CONFLICT (batch_id, form_index) DO UPDATE SET status=excluded.status, "
+            f"open_flags=excluded.open_flags, updated_at=excluded.updated_at, "
+            f"approved_at=excluded.approved_at, record_json=excluded.record_json, "
+            f"edits_json=excluded.edits_json, {updates}",
+            (batch_id, review.form_index, status, flags, now, now, now if review.approved else None,
+             record_json, edits_json, *(values[c] for c in _COLUMNS)))
+        form_id = conn.execute("SELECT id FROM forms WHERE batch_id = ? AND form_index = ?",
+                               (batch_id, review.form_index)).fetchone()[0]
+        if not conn.execute("SELECT 1 FROM images WHERE form_id = ? LIMIT 1", (form_id,)).fetchone():
+            _insert_images(conn, form_id, review.record)
+
+
+def _insert_images(conn: sqlite3.Connection, form_id: int, record) -> None:
+    """The crops and page previews of a form: written once, the record never changes."""
     rows = []
-    for key, crops in review.record.field_crops.items():
-        rows += [(record_id, "crop", key, c.page, json.dumps(list(c.box)), i, c.jpeg) for i, c in enumerate(crops)]
-    rows += [(record_id, "page", None, p.page_number, None, i, p.jpeg)
-             for i, p in enumerate(review.record.page_images)]
-    conn.executemany("INSERT INTO images (record_id, kind, field, page, box, seq, jpeg) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    for key, crops in record.field_crops.items():
+        rows += [(form_id, "crop", key, c.page, json.dumps(list(c.box)), i, c.jpeg) for i, c in enumerate(crops)]
+    rows += [(form_id, "page", None, p.page_number, None, i, p.jpeg) for i, p in enumerate(record.page_images)]
+    conn.executemany("INSERT INTO images (form_id, kind, field, page, box, seq, jpeg) VALUES (?, ?, ?, ?, ?, ?, ?)",
                      rows)
-    return record_id
 
 
-def save_run(reviews: list, path: Optional[Path] = None) -> str:
-    """Save a new extraction run; sets each review's store_id. Returns the run id."""
-    run_id = uuid.uuid4().hex
-    with closing(connect(path)) as conn, conn:
-        for position, review in enumerate(reviews):
-            review.store_id = _insert(conn, review, run_id, position)
-    return run_id
+def load_batch(batch_id: str, path=None) -> list:
+    """[FormReview] of one extraction run, in form order, with their crops and page previews, ready for the
+    review screen. Rows saved before record_json existed cannot be reopened and are skipped."""
+    from src.field_crops import PagePreview, SourceCrop
+    from src.record_builder import Record
+    from src.review_session import FormReview
 
-
-def update_review(review: FormReview, path: Optional[Path] = None) -> None:
-    """Store the reviewer's corrections and approval status of a saved review (no-op when it is not saved)."""
-    if review.store_id is None:
-        return
-    with closing(connect(path)) as conn, conn:
-        conn.execute("UPDATE records SET edits_json = ?, approved = ?, updated_at = ? WHERE id = ?",
-                     (json.dumps(review.edits, ensure_ascii=False), int(review.approved), _now(), review.store_id))
-
-
-def _review(conn: sqlite3.Connection, row: sqlite3.Row) -> FormReview:
-    data = json.loads(row["record_json"])
-    crops: dict = {}
-    pages = []
-    for img in conn.execute("SELECT kind, field, page, box, jpeg FROM images WHERE record_id = ? ORDER BY kind, seq",
-                            (row["id"],)):
-        if img["kind"] == "crop":
-            crops.setdefault(img["field"], []).append(SourceCrop(img["page"], tuple(json.loads(img["box"])), img["jpeg"]))
-        else:
-            pages.append(PagePreview(img["page"], img["jpeg"]))
-    record = Record(**data, field_crops={k: crops[k] for k in FIELD_KEYS if k in crops}, page_images=pages)
-    return FormReview(record, edits=json.loads(row["edits_json"]), approved=bool(row["approved"]), store_id=row["id"])
-
-
-def load_run(run_id: str, path: Optional[Path] = None) -> list:
-    """[FormReview] of one run, in their original order."""
-    with closing(connect(path)) as conn:
-        rows = conn.execute("SELECT * FROM records WHERE run_id = ? ORDER BY position", (run_id,)).fetchall()
-        return [_review(conn, row) for row in rows]
-
-
-def list_records(path: Optional[Path] = None) -> list:
-    """Every saved record, newest first: [{id, run_id, created_at, updated_at, approved, review}].
-
-    `review` is a FormReview without images (enough for the Records table); open a run with load_run.
-    """
-    with closing(connect(path)) as conn:
-        rows = conn.execute("SELECT * FROM records ORDER BY created_at DESC, position").fetchall()
     out = []
-    for row in rows:
-        record = Record(**json.loads(row["record_json"]))
-        review = FormReview(record, edits=json.loads(row["edits_json"]), approved=bool(row["approved"]),
-                            store_id=row["id"])
-        out.append({"id": row["id"], "run_id": row["run_id"], "created_at": row["created_at"],
-                    "updated_at": row["updated_at"], "approved": bool(row["approved"]), "review": review})
+    with closing(_connect(path)) as conn:
+        rows = conn.execute("SELECT id, status, record_json, edits_json FROM forms WHERE batch_id = ? "
+                            "AND record_json != '' ORDER BY form_index", (batch_id,)).fetchall()
+        for row in rows:
+            crops: dict = {}
+            pages = []
+            for img in conn.execute("SELECT kind, field, page, box, jpeg FROM images WHERE form_id = ? "
+                                    "ORDER BY kind, seq", (row["id"],)):
+                if img["kind"] == "crop":
+                    crops.setdefault(img["field"], []).append(
+                        SourceCrop(img["page"], tuple(json.loads(img["box"])), img["jpeg"]))
+                else:
+                    pages.append(PagePreview(img["page"], img["jpeg"]))
+            record = Record(**json.loads(row["record_json"]),
+                            field_crops={k: crops[k] for k in FIELD_KEYS if k in crops}, page_images=pages)
+            out.append(FormReview(record, edits=json.loads(row["edits_json"]),
+                                  approved=row["status"] == STATUS_APPROVED))
     return out
 
 
-def delete_records(ids: list, path: Optional[Path] = None) -> int:
-    """Delete saved records and their images. Returns how many were deleted."""
+def save_all(reviews: list, batch_id: str, path=None) -> None:
+    for review in reviews:
+        save_review(review, batch_id, path)
+
+
+def search(text: str = "", status: Optional[str] = None, sender: Optional[str] = None,
+           path=None) -> pd.DataFrame:
+    """Stored forms, newest first. `text` matches any field or metadata column (substring); `status` is
+    STATUS_APPROVED / STATUS_PENDING; `sender` is an exact sending_entity. Columns: id, batch_id, form_index,
+    status, open_flags (a dict), updated_at, then the field and metadata keys."""
+    where, args = [], []
+    text = " ".join((text or "").split())
+    if text:
+        escaped = text.replace("!", "!!").replace("%", "!%").replace("_", "!_")  # "!" is the LIKE escape char
+        like = f"%{escaped}%"
+        where.append("(" + " OR ".join(f"{c} LIKE ? ESCAPE '!'" for c in _COLUMNS) + ")")
+        args += [like] * len(_COLUMNS)
+    if status:
+        where.append("status = ?")
+        args.append(status)
+    if sender:
+        where.append("sending_entity = ?")
+        args.append(sender)
+    sql = (f"SELECT id, batch_id, form_index, status, open_flags, updated_at, {', '.join(_COLUMNS)} FROM forms"
+           + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY updated_at DESC, id DESC")
+    with closing(_connect(path)) as conn:
+        rows = [dict(r) for r in conn.execute(sql, args)]
+    frame = pd.DataFrame(rows, columns=["id", "batch_id", "form_index", "status", "open_flags", "updated_at", *_COLUMNS])
+    frame["open_flags"] = frame["open_flags"].map(json.loads)
+    return frame
+
+
+def counts(path=None) -> dict:
+    with closing(_connect(path)) as conn:
+        rows = conn.execute("SELECT status, COUNT(*) FROM forms GROUP BY status").fetchall()
+    found = {row[0]: row[1] for row in rows}
+    approved, pending = found.get(STATUS_APPROVED, 0), found.get(STATUS_PENDING, 0)
+    return {"total": approved + pending, "approved": approved, "pending": pending}
+
+
+def senders(path=None) -> list:
+    with closing(_connect(path)) as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT DISTINCT sending_entity FROM forms WHERE sending_entity != '' ORDER BY sending_entity")]
+
+
+def export_frame(stored: pd.DataFrame) -> tuple:
+    """(DataFrame, highlight) for excel_exporter from a `search` result: same as the review export (one row per
+    commitment; the database itself stays one row per form);
+    flagged fields of forms not yet approved are highlighted."""
+    frame = stored[[*FIELD_KEYS, *METADATA_KEYS]].copy()
+    frame[REVIEW_STATUS_KEY] = stored["status"].map(
+        {STATUS_APPROVED: REVIEW_STATUS_APPROVED, STATUS_PENDING: REVIEW_STATUS_PENDING})
+    frame = frame.reset_index(drop=True)
+    highlight = set()
+    for pos, (status, flags) in enumerate(zip(stored["status"], stored["open_flags"])):
+        if status != STATUS_APPROVED:
+            highlight |= {(pos, key) for key in flags}
+            highlight.add((pos, REVIEW_STATUS_KEY))
+    return expand_per_commitment(frame, highlight)
+
+
+def delete(ids: list, path=None) -> int:
     if not ids:
         return 0
-    with closing(connect(path)) as conn, conn:
-        cur = conn.execute(f"DELETE FROM records WHERE id IN ({','.join('?' * len(ids))})", [int(i) for i in ids])
+    with closing(_connect(path)) as conn, conn:
+        cur = conn.execute(f"DELETE FROM forms WHERE id IN ({', '.join('?' for _ in ids)})", list(ids))
         return cur.rowcount
+
+
+def delete_all(path=None) -> int:
+    with closing(_connect(path)) as conn, conn:
+        deleted = conn.execute("DELETE FROM forms").rowcount
+        conn.execute("DELETE FROM images")
+        return deleted

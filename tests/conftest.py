@@ -5,20 +5,20 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _temp_database(monkeypatch, tmp_path):
+    """Tests never touch the real data/db/labextract.db."""
+    from src import config
+
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "db" / "test.db")
+
+
+@pytest.fixture(autouse=True)
 def _wide_received_date_window(monkeypatch):
     """Fixtures use June 2026 sample dates with "today" in October; the 90-day production window would flag
     them all. Tests of the window itself (test_strict_validation.py) set it explicitly."""
     from src import config
 
     monkeypatch.setattr(config, "RECEIVED_DATE_MAX_AGE_DAYS", 365)
-
-
-@pytest.fixture(autouse=True)
-def _records_db_in_tmp(monkeypatch, tmp_path):
-    """Saved records go to a throw-away database, never to data/records/."""
-    from src import config
-
-    monkeypatch.setattr(config, "RECORDS_DB", tmp_path / "records.db")
 
 
 class FakeMessages:
