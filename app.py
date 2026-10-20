@@ -78,18 +78,18 @@ def _data_uri(name: str) -> str:
     return f"data:image/png;base64,{base64.b64encode(path.read_bytes()).decode()}" if path.exists() else ""
 
 
-# Partner logos: Sheba Medical Center and the Central Virology Laboratory (top of the sidebar) and the
-# Ministry of Health (bottom of the sidebar). The look follows the lab's page on the Sheba web site.
+# Logos: the Central Virology Laboratory at the top of the sidebar; Sheba Medical Center and the Ministry of
+# Health in the page footer ("in partnership with"). The look follows the lab's page on the Sheba web site.
 BRAND_HTML = f"""
-<img class="lx-sheba-logo" src="{_data_uri('sheba_logo.png')}" alt="שיבא תל השומר">
 <div class="lx-brand">
   <img class="lx-lab-logo" src="{_data_uri('lab_logo.png')}" alt="המעבדה המרכזית לנגיפים">
   <div><div class="lx-name" dir="ltr">LabExtract</div><div class="lx-sub">המעבדה המרכזית לנגיפים<br>חילוץ טפסי התחייבות</div></div>
 </div>
 """
 PARTNER_HTML = f"""
-<div class="lx-partner"><span>בשיתוף</span>
-  <div class="lx-partner-logos"><img src="{_data_uri('moh_logo.png')}" alt="משרד הבריאות"></div></div>
+<footer class="lx-partner"><span>בשיתוף:</span>
+  <div class="lx-partner-logos"><img src="{_data_uri('sheba_logo.png')}" alt="שיבא תל השומר">
+  <img src="{_data_uri('moh_logo.png')}" alt="משרד הבריאות"></div></footer>
 """
 PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים שהועלו נמחקים בסיום החילוץ. הרשומות נשמרות במחשב הזה בלבד '
                 'ואפשר למחוק אותן במסך הרשומות. שום נתון אישי לא נכתב ליומן.</div>')
@@ -159,11 +159,11 @@ div[class*="st-key-cardflag_"] {{
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 4px; }}
 .lx-brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }}
 .lx-lab-logo {{ width: 56px; height: 56px; flex: none; }}
-.lx-partner {{ display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #DCE4EC; padding-top: 14px;
-    margin-top: 18px; font-size: 12px; color: #5F6E82; }}
-.lx-partner-logos {{ display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }}
-.lx-partner-logos img {{ height: 64px; width: auto; max-width: 100%; }}
-.lx-sheba-logo {{ display: block; height: 52px; width: auto; margin: 0 0 16px; }}
+.lx-partner {{ display: flex; flex-direction: column; gap: 10px; border-top: 1px solid #E3E2EE; padding-top: 18px;
+    margin-top: 48px; font-size: 14px; font-weight: 600; color: #1B1A6B; }}
+.lx-partner-logos {{ display: flex; align-items: center; gap: 32px; flex-wrap: wrap; }}
+.lx-partner-logos img {{ height: 56px; width: auto; max-width: 100%; }}
+.lx-partner-logos img + img {{ height: 68px; }}
 .lx-name {{ font-weight: 700; font-size: 20px; line-height: 1.2; color: #1B1A6B; }}
 .lx-sub {{ font-size: 12px; color: #5B6B80; }}
 .lx-privacy {{ font-size: 12px; color: #5F6E82; border-top: 1px solid #DCE4EC; padding-top: 14px; margin-top: 18px; }}
@@ -915,7 +915,7 @@ def sidebar(has_results: bool) -> None:
                     if items else '<div class="lx-section">טפסים שהועלו</div>', unsafe_allow_html=True)
         if not items:
             st.markdown('<div class="lx-empty">עדיין אין טפסים.<br>הטפסים יופיעו כאן אחרי החילוץ.</div>'
-                        + PRIVACY_NOTE + PARTNER_HTML, unsafe_allow_html=True)
+                        + PRIVACY_NOTE, unsafe_allow_html=True)
             return
         for i, r in enumerate(items):
             st.button(f"{i + 1} {r.record.metadata.get('form_type', '') or 'לא מזוהה'}", key=f"queue_{i}",
@@ -925,7 +925,6 @@ def sidebar(has_results: bool) -> None:
                      width="stretch"):
             clear_all()
             st.rerun()
-        st.markdown(PARTNER_HTML, unsafe_allow_html=True)
 
 
 def main() -> None:
@@ -954,6 +953,7 @@ def main() -> None:
         screen_records()
     else:
         screen_upload()
+    st.markdown(PARTNER_HTML, unsafe_allow_html=True)  # page footer on every screen
 
 
 main()
