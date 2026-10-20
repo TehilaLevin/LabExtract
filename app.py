@@ -37,6 +37,7 @@ from src.constants import (
     FIELD_KEYS,
     FLAG_COLOR,
     FLAG_REASONS,
+    LIST_SEPARATOR,
     REVIEW_STATUS_APPROVED,
     REVIEW_STATUS_HEADER,
     REVIEW_STATUS_KEY,
@@ -47,9 +48,28 @@ from src.excel_exporter import to_xlsx_bytes
 from src.claude_client import LLMError, LLMQuotaError, check_configured
 from src.validators import list_approved_senders
 
-st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide", initial_sidebar_state="expanded")
 
-SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירת טפסים", "export": "ייצוא"}
+SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירה", "export": "ייצוא"}
+APPROVED_COLOR = "#5EEAD4"  # mint: actions and approvals ("control room" design, see .streamlit/config.toml)
+PIPELINE_STEPS = (
+    ("פיצול לטפסים", "כל עמוד: טופס חדש או המשך של הקודם"),
+    ("זיהוי סוג טופס", "קופה או בית חולים, מרשימה סגורה"),
+    ("חילוץ שדות", "7 שדות, עם רמת ביטחון ומיקום בטופס"),
+    ("אימות ונרמול", "ספרת ביקורת בת״ז, תאריכים, מספרים"),
+    ("סקירה וייצוא", "אתם מאשרים – ומורידים Excel"),
+)
+# Pipeline step shown as active for each progress stage reported by process_files.
+STAGE_STEP = {"start": 0, "split": 0, "extract": 2}
+BRAND_HTML = """
+<div class="lx-brand">
+  <div class="lx-logo"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="#06221E"
+    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12v12H4z"/><path d="M7 8h6M7 11h6M7 14h3"/></svg></div>
+  <div><div class="lx-name" dir="ltr">LabExtract</div><div class="lx-sub">חילוץ טפסי התחייבות</div></div>
+</div>
+"""
+PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים נשמרים רק בזיכרון של החלון הזה ונמחקים בסיום. '
+                'שום נתון אישי לא נכתב ליומן.</div>')
 UPLOAD_TYPES = ["pdf", "png", "jpg", "jpeg"]
 DEV_CACHE_BANNER = ("**מצב פיתוח: DEV_CACHE פעיל.** תשובות המודל (שעלולות לכלול נתונים אישיים) נשמרות בדיסק "
                     "בתיקייה data/dev_cache, כדי שהרצה חוזרת על אותם עמודים לא תעלה כסף. "
@@ -71,6 +91,108 @@ div[class*="st-key-cardflag_"] {{
 }}
 .flag-reason {{ color: {FLAG_COLOR}; font-weight: 600; }}
 .suggestion {{ color: {FLAG_COLOR}; }}
+
+/* Layout and typography of the "control room" design. Colours and fonts come from the theme. */
+[data-testid="stHeader"] {{ background: transparent; }}
+.block-container {{ padding-top: 2.5rem; max-width: 1400px; }}
+.lx-kicker {{ font-size: 13px; font-weight: 600; color: {APPROVED_COLOR}; margin: 0 0 6px; }}
+.lx-h1 {{ font-size: 34px; font-weight: 700; line-height: 1.15; margin: 0 0 10px; padding: 0; }}
+.lx-lead {{ font-size: 16px; color: #B4BFD6; margin: 0; max-width: 760px; }}
+.lx-muted {{ font-size: 13px; color: #8390AC; }}
+.lx-section {{ font-size: 12px; font-weight: 500; color: #93A0BC; margin: 18px 0 8px; }}
+
+/* Primary buttons: dark text on mint. */
+[data-testid="stBaseButton-primary"] {{ color: #06221E; font-weight: 600; border: none; }}
+[data-testid="stBaseButton-primary"]:disabled {{ background: #172036; color: #5B6782; }}
+.st-key-extract button, .st-key-start_review button {{
+    min-height: 52px; padding: 0 28px; border-radius: 12px; font-size: 16px;
+}}
+.st-key-extract button:not(:disabled), .st-key-start_review button {{ box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+
+/* Upload drop zone. Streamlit's built-in English texts are hidden (font-size: 0) and replaced with
+   Hebrew through ::before / ::after; the widget itself and its behaviour stay Streamlit's. */
+[data-testid="stFileUploaderDropzone"] {{
+    border: 2px dashed #2F5F5A; background: #0C1A1F; border-radius: 16px; padding: 36px 24px;
+    display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;
+}}
+[data-testid="stFileUploaderDropzone"]::before {{
+    content: ""; width: 64px; height: 64px; border-radius: 16px; background: #0D2A27 center / 32px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%235EEAD4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21V7M10 12l6-6 6 6'/%3E%3Cpath d='M6 20v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E");
+}}
+[data-testid="stFileUploaderDropzone"]::before {{ order: -2; }}
+[data-testid="stFileUploaderDropzoneInstructions"] {{ order: -1; }}
+[data-testid="stFileUploaderDropzoneInstructions"] span {{ font-size: 0; }}
+[data-testid="stFileUploaderDropzoneInstructions"] > div::before {{
+    content: "גררו קבצים לכאן"; display: block; font-size: 20px; font-weight: 600; color: #E8EDF7;
+}}
+[data-testid="stFileUploaderDropzoneInstructions"] > div::after {{
+    content: "PDF · PNG · JPG · JPEG · עד 500MB לקובץ"; display: block; font-size: 12px; color: #8390AC; margin-top: 6px;
+}}
+[data-testid="stFileUploaderDropzone"] button p {{ font-size: 0; }}
+[data-testid="stFileUploaderDropzone"] button p::after {{ content: "בחירה מהמחשב"; font-size: 14px; }}
+.lx-lead {{ margin-bottom: 22px; }}
+
+/* Sidebar: brand, step navigation, batch list. */
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 4px; }}
+.lx-brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }}
+.lx-logo {{ width: 34px; height: 34px; border-radius: 9px; background: {APPROVED_COLOR};
+    display: flex; align-items: center; justify-content: center; }}
+.lx-name {{ font-weight: 700; font-size: 19px; line-height: 1.2; }}
+.lx-sub {{ font-size: 12px; color: #93A0BC; }}
+.lx-privacy {{ font-size: 12px; color: #8390AC; border-top: 1px solid #1E2944; padding-top: 14px; margin-top: 18px; }}
+.lx-empty {{ border: 1px dashed #243049; border-radius: 10px; padding: 16px 12px; font-size: 13px;
+    color: #8390AC; text-align: center; }}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button,
+[data-testid="stSidebar"] [class*="st-key-queue_"] button {{
+    width: 100%; justify-content: flex-start; border: none; background: transparent; color: #C7D0E2;
+    min-height: 40px; padding: 6px 12px; border-radius: 8px;
+}}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button:hover,
+[data-testid="stSidebar"] [class*="st-key-queue_"] button:hover {{ background: #172036; color: #E8EDF7; }}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button:disabled {{ color: #5B6782; background: transparent; }}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button::before {{
+    content: ""; width: 8px; height: 8px; border-radius: 50%; background: #243049; margin-inline-end: 10px; flex: none;
+}}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button > div,
+[data-testid="stSidebar"] [class*="st-key-queue_"] button > div {{ flex: 1; min-width: 0; justify-content: flex-start; }}
+[data-testid="stSidebar"] [class*="st-key-queue_"] button {{ font-size: 13px; min-height: 36px; }}
+[data-testid="stSidebar"] [class*="st-key-queue_"] button::after {{
+    content: ""; margin-inline-start: auto; min-width: 22px; height: 22px; border-radius: 999px; font-size: 11px;
+    font-weight: 600; display: inline-flex; align-items: center; justify-content: center; background: #172036;
+}}
+[data-testid="stSidebar"] [class*="st-key-queue_"] [data-testid="stMarkdownContainer"] p {{
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}}
+
+/* Stat tiles and pipeline steps. */
+.lx-tiles {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 8px 0 20px; }}
+.lx-tile {{ background: #111829; border: 1px solid #1E2944; border-radius: 12px; padding: 16px 18px; }}
+.lx-tile.flag {{ background: #1A1508; border-color: #5C3D00; }}
+.lx-tile.ok {{ background: #0D1F1D; border-color: #1C4A44; }}
+.lx-tile-label {{ font-size: 13px; color: #93A0BC; }}
+.lx-tile.flag .lx-tile-label {{ color: #FFC15C; }}
+.lx-tile.ok .lx-tile-label {{ color: {APPROVED_COLOR}; }}
+.lx-tile-value {{ font-family: "JetBrains Mono", monospace; font-size: 32px; font-weight: 600; line-height: 1.3; }}
+.lx-tile.flag .lx-tile-value {{ color: {FLAG_COLOR}; }}
+.lx-tile.ok .lx-tile-value {{ color: {APPROVED_COLOR}; }}
+.lx-tile-note {{ font-size: 12px; color: #8390AC; }}
+.lx-tile.flag .lx-tile-note {{ color: #C9A86A; }}
+.lx-bar {{ height: 6px; background: #12302C; border-radius: 3px; overflow: hidden; margin-top: 8px; }}
+.lx-bar > div {{ height: 100%; background: {APPROVED_COLOR}; }}
+.lx-steps {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }}
+.lx-step {{ display: flex; flex-direction: column; gap: 6px; border-radius: 12px; padding: 14px;
+    background: #111829; border: 1px solid #1E2944; }}
+.lx-step.active {{ background: #0D1F1D; border-color: {APPROVED_COLOR}; }}
+.lx-step-num {{ width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center;
+    justify-content: center; font-size: 12px; font-weight: 600; background: #172036; color: #93A0BC; }}
+.lx-step.active .lx-step-num, .lx-step.done .lx-step-num {{ background: {APPROVED_COLOR}; color: #06221E; }}
+.lx-step-title {{ font-weight: 600; font-size: 14px; }}
+.lx-step-text {{ font-size: 12px; color: #93A0BC; line-height: 1.45; }}
+.lx-principle {{ font-size: 13px; color: #8390AC; margin-top: 24px; }}
+.lx-principle span {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: {FLAG_COLOR};
+    margin-inline-end: 8px; }}
+.lx-legend {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: {FLAG_COLOR};
+    vertical-align: middle; margin-inline-end: 4px; }}
 </style>
 """
 
@@ -123,7 +245,18 @@ def run_error_message(exc: Exception) -> str:
 
 # ------------------------------------------------------------------ extraction (background thread)
 
-def run_extraction(files: list) -> None:
+def steps_html(active: int = -1) -> str:
+    """The five pipeline cards on the upload screen; `active` lights the running step (-1: none)."""
+    cards = []
+    for i, (title, text) in enumerate(PIPELINE_STEPS):
+        state = "active" if i == active else ("done" if 0 <= i < active else "")
+        num = "✓" if state == "done" else str(i + 1)
+        cards.append(f'<div class="lx-step {state}"><span class="lx-step-num">{num}</span>'
+                     f'<span class="lx-step-title">{title}</span><span class="lx-step-text">{text}</span></div>')
+    return f'<div class="lx-section">מה קורה בחילוץ</div><div class="lx-steps">{"".join(cards)}</div>'
+
+
+def run_extraction(files: list, progress_slot, steps_slot) -> None:
     from src.record_builder import process_files
 
     payload = [(f.name, f.getvalue()) for f in files]
@@ -143,10 +276,15 @@ def run_extraction(files: list) -> None:
 
     worker = threading.Thread(target=target, daemon=True)
     worker.start()
-    bar = st.progress(0.0, text="ממיר קבצים לתמונות…")
+    bar = progress_slot.progress(0.0, text="ממיר קבצים לתמונות…")
+    shown_step = None
     while worker.is_alive():
         with lock:
             stage, done, total = progress["stage"], progress["done"], progress["total"]
+        step = STAGE_STEP.get(stage, 0)
+        if step != shown_step:
+            steps_slot.markdown(steps_html(step), unsafe_allow_html=True)
+            shown_step = step
         if stage == "split" and total:
             bar.progress(done / total, text=f"מזהה כיוון דפים ומפצל לטפסים… ({done}/{total})")
         elif stage == "extract" and total:
@@ -165,22 +303,43 @@ def run_extraction(files: list) -> None:
 
 # ------------------------------------------------------------------ screens
 
+def screen_header(step: int, name: str, title: str, lead: str) -> None:
+    st.markdown(f'<p class="lx-kicker">שלב {step} מתוך 4 · {name}</p><h1 class="lx-h1">{title}</h1>'
+                f'<p class="lx-lead">{lead}</p>', unsafe_allow_html=True)
+
+
 def screen_upload() -> None:
-    st.subheader("העלאת טפסים")
-    st.write("גררו לכאן קבצי PDF סרוקים או צילומי טלפון (PNG / JPG). קובץ אחד יכול להכיל טפסים רבים.")
+    screen_header(1, "העלאה", "קליטת אצווה של טפסי התחייבות",
+                  "גררו את כל הטפסים של היום – סריקות, צילומי טלפון או PDF מרובה עמודים. המערכת מפצלת לטפסים, "
+                  "מזהה את הגורם השולח ומחלצת את השדות. כל שדה לא ודאי יסומן בכתום לבדיקה שלכם.")
     problem = config_problem()
     if problem:
-        st.error(problem)
+        st.error(problem, icon=":material/error:")
     files = st.file_uploader("קבצים", type=UPLOAD_TYPES, accept_multiple_files=True,
                              key=f"uploader_{st.session_state.uploader_n}", label_visibility="collapsed")
-    label = "חלץ"
+    label = "חלץ נתונים"
     if reviews():
-        st.warning("חילוץ חדש יחליף את התוצאות הקיימות, כולל תיקונים ואישורים שלא יוצאו.")
+        st.warning("חילוץ חדש יחליף את התוצאות הקיימות, כולל תיקונים ואישורים שלא יוצאו. כדאי לייצא קודם.",
+                   icon=":material/warning:")
         label = "חלץ והחלף את התוצאות"
-    if st.button(label, type="primary", disabled=not files or bool(problem), key="extract"):
-        run_extraction(files)
+    if problem:
+        hint = "יש להשלים את ההגדרות"
+    elif not files:
+        hint = "בחרו קבצים כדי להתחיל"
+    else:
+        hint = f"{len(files)} קבצים · הזמן משתנה לפי מספר העמודים"
+    button_col, hint_col = st.columns([1, 3], vertical_alignment="center")  # RTL: the button is on the right
+    clicked = button_col.button(label, type="primary", disabled=not files or bool(problem), key="extract",
+                                icon=":material/bolt:")
+    hint_col.markdown(f'<span class="lx-muted">{hint}</span>', unsafe_allow_html=True)
+    progress_slot, steps_slot = st.empty(), st.empty()
+    steps_slot.markdown(steps_html(), unsafe_allow_html=True)
+    if clicked:
+        run_extraction(files, progress_slot, steps_slot)
     if st.session_state.run_error:
         st.error(f"החילוץ נכשל: {st.session_state.run_error}")
+    st.markdown('<div class="lx-principle"><span></span>העיקרון: שדה ריק ומסומן עדיף תמיד על ערך מנוחש.</div>',
+                unsafe_allow_html=True)
 
 
 def _rtl_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -192,10 +351,37 @@ def screen_summary() -> None:
     items = reviews()
     flagged = sum(len(r.record.flags) for r in items)
     approved = len(items) - len(rs.unapproved(items))
-    st.subheader("סיכום")
-    st.markdown(f"**{len(items)} טפסים עובדו, {flagged} שדות סומנו לבדיקה, {approved} טפסים אושרו.**")
+    head_col, action_col = st.columns([3, 2], vertical_alignment="bottom")
+    with head_col:
+        screen_header(2, "סיכום", "החילוץ הסתיים",
+                      f"{len(items)} טפסים עובדו, {flagged} שדות סומנו לבדיקה, {approved} טפסים אושרו.")
+    nxt = rs.next_unapproved(items, -1)
+    with action_col:
+        if nxt is not None and st.button("התחל סקירה מהטופס הראשון שלא אושר", type="primary", key="start_review",
+                                         icon=":material/arrow_back:", icon_position="right"):
+            go("review", nxt)
+            st.rerun()
 
     df = rs.summary_frame(items)
+    files = df["source_file"].nunique()
+    pages = sum(len(str(p).split(LIST_SEPARATOR)) for p in df["page_numbers"] if str(p))
+    flagged_forms = int((df["flagged_fields"] > 0).sum())
+    warnings = int(df["form_warnings"].sum())
+    warning_forms = int((df["form_warnings"] > 0).sum())
+    share = round(100 * approved / len(items)) if items else 0
+    st.markdown(f"""
+<div class="lx-tiles">
+  <div class="lx-tile"><div class="lx-tile-label">טפסים</div><div class="lx-tile-value">{len(items)}</div>
+    <div class="lx-tile-note">מתוך {files} קבצים · {pages} עמודים</div></div>
+  <div class="lx-tile flag"><div class="lx-tile-label">שדות לבדיקה</div><div class="lx-tile-value">{flagged}</div>
+    <div class="lx-tile-note">ב־{flagged_forms} טפסים</div></div>
+  <div class="lx-tile flag"><div class="lx-tile-label">אזהרות טופס</div><div class="lx-tile-value">{warnings}</div>
+    <div class="lx-tile-note">ב־{warning_forms} טפסים · פיצול או חילוץ</div></div>
+  <div class="lx-tile ok"><div class="lx-tile-label">אושרו</div>
+    <div class="lx-tile-value">{approved}<span style="font-size:18px;color:#3E8F84"> / {len(items)}</span></div>
+    <div class="lx-bar"><div style="width:{share}%"></div></div></div>
+</div>""", unsafe_allow_html=True)
+
     df.insert(0, "position", range(1, len(df) + 1))
     headers = {"position": "#", "source_file": ALL_HEADERS["source_file"], "page_numbers": ALL_HEADERS["page_numbers"],
                "form_type": ALL_HEADERS["form_type"], "flagged_fields": "שדות לבדיקה",
@@ -208,18 +394,21 @@ def screen_summary() -> None:
         for col in row.index:
             hot = not done and ((col in ("שדות לבדיקה", "אזהרות טופס") and row[col] > 0)
                                 or col == REVIEW_STATUS_HEADER)
-            out.append(f"background-color: {FLAG_COLOR}" if hot else "")
+            if hot:  # dark text on orange: readable on the dark theme
+                out.append(f"background-color: {FLAG_COLOR}; color: #1A1100; font-weight: 600")
+            elif done and col == REVIEW_STATUS_HEADER:
+                out.append(f"color: {APPROVED_COLOR}; font-weight: 600")
+            else:
+                out.append("")
         return out
 
-    st.caption("לחצו על שורה כדי לפתוח את הטופס.")
+    st.markdown('<div class="lx-section" style="font-size:18px;font-weight:600;color:#E8EDF7">כל הטפסים</div>'
+                '<span class="lx-muted">לחצו על שורה כדי לפתוח את הטופס · <span class="lx-legend"></span>'
+                'דורש בדיקה</span>', unsafe_allow_html=True)
     event = st.dataframe(view.style.apply(colour, axis=1), hide_index=True, on_select="rerun",
                          selection_mode="single-row", key=f"summary_{st.session_state.nonce}")
     if event.selection.rows:
         go("review", event.selection.rows[0])
-        st.rerun()
-    nxt = rs.next_unapproved(items, -1)
-    if nxt is not None and st.button("התחל סקירה מהטופס הראשון שלא אושר", type="primary", key="start_review"):
-        go("review", nxt)
         st.rerun()
 
 
@@ -398,27 +587,68 @@ def screen_export() -> None:
 
 # ------------------------------------------------------------------ main
 
+def _sidebar_css(items: list, screen: str, pos: int) -> str:
+    """Per-item CSS for the sidebar: the current step and form, step dots and the batch-list badges.
+
+    Streamlit buttons take only a text label, so state (current, approved, number of open flags) is drawn
+    with CSS on each button's key class ("st-key-<key>").
+    """
+    order = list(SCREENS)
+    rules = [f'[data-testid="stSidebar"] div.st-key-nav_{screen} button {{ background: #172036; color: #E8EDF7; '
+             f'font-weight: 600; }}',
+             f'[data-testid="stSidebar"] div.st-key-nav_{screen} button::before {{ background: transparent; '
+             f'border: 2px solid {APPROVED_COLOR}; box-sizing: border-box; }}']
+    if items:
+        rules += [f'[data-testid="stSidebar"] div.st-key-nav_{s} button::before {{ background: {APPROVED_COLOR}; }}'
+                  for s in order[:order.index(screen)]]
+    for i, r in enumerate(items):
+        sel = f'[data-testid="stSidebar"] div.st-key-queue_{i} button'
+        issues = len(r.open_flags()) + len(r.record.split_flags) + bool(r.record.error)
+        if r.approved:
+            rules.append(f'{sel}::after {{ content: "✓"; background: #0D2A27; color: {APPROVED_COLOR}; }}')
+        elif issues:
+            rules.append(f'{sel}::after {{ content: "{issues}"; background: #2A1E05; color: #FFC15C; }}')
+        if screen == "review" and i == pos:
+            rules.append(f'{sel} {{ background: #172036; color: #E8EDF7; box-shadow: inset 0 0 0 1px #2A3654; }}')
+    return "<style>" + "\n".join(rules) + "</style>"
+
+
+def sidebar(has_results: bool) -> None:
+    items = reviews()
+    with st.sidebar:
+        st.markdown(BRAND_HTML + _sidebar_css(items, st.session_state.screen, st.session_state.pos),
+                    unsafe_allow_html=True)
+        for screen, label in SCREENS.items():
+            st.button(label, key=f"nav_{screen}", type="tertiary", disabled=not has_results and screen != "upload",
+                      on_click=go, args=(screen,), width="stretch")
+        approved = len(items) - len(rs.unapproved(items))
+        st.markdown(f'<div class="lx-section" style="display:flex;justify-content:space-between">'
+                    f'<span>טפסים באצווה</span><span dir="ltr">{approved} / {len(items)}</span></div>'
+                    if items else '<div class="lx-section">טפסים באצווה</div>', unsafe_allow_html=True)
+        if not items:
+            st.markdown('<div class="lx-empty">עדיין אין טפסים.<br>הטפסים יופיעו כאן אחרי החילוץ.</div>'
+                        + PRIVACY_NOTE, unsafe_allow_html=True)
+            return
+        for i, r in enumerate(items):
+            st.button(f"{i + 1} {r.record.metadata.get('form_type', '') or 'לא מזוהה'}", key=f"queue_{i}",
+                      type="tertiary", on_click=go, args=("review", i), width="stretch")
+        st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+        if st.button("נקה הכל", help="מוחק את כל התוצאות מהזיכרון", key="clear_all", icon=":material/delete:",
+                     width="stretch"):
+            clear_all()
+            st.rerun()
+
+
 def main() -> None:
     init_state()
     st.markdown(CSS, unsafe_allow_html=True)
-    st.title("LabExtract")
-    st.caption("חילוץ נתונים מטפסי התחייבות · שדה ריק ומסומן עדיף תמיד על ערך מנוחש")
     if config.DEV_CACHE:
         st.error(DEV_CACHE_BANNER, icon="⚠️")
 
     has_results = bool(reviews())
     if not has_results:
         st.session_state.screen = "upload"
-    top = st.columns([4, 1])
-    with top[0]:
-        options = list(SCREENS) if has_results else ["upload"]
-        st.session_state.nav = st.session_state.screen  # set before the widget is created
-        st.radio("מסך", options, format_func=SCREENS.get, horizontal=True, key="nav",
-                 label_visibility="collapsed", on_change=lambda: go(st.session_state.nav))
-    with top[1]:
-        if has_results and st.button("נקה הכל", help="מוחק את כל התוצאות מהזיכרון", key="clear_all"):
-            clear_all()
-            st.rerun()
+    sidebar(has_results)
 
     if st.session_state.notice:
         st.success(st.session_state.notice)
