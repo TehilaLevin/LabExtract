@@ -13,6 +13,14 @@ def _wide_received_date_window(monkeypatch):
     monkeypatch.setattr(config, "RECEIVED_DATE_MAX_AGE_DAYS", 365)
 
 
+@pytest.fixture(autouse=True)
+def _records_db_in_tmp(monkeypatch, tmp_path):
+    """Saved records go to a throw-away database, never to data/records/."""
+    from src import config
+
+    monkeypatch.setattr(config, "RECORDS_DB", tmp_path / "records.db")
+
+
 class FakeMessages:
     """Stands in for anthropic_client().beta.messages: records the request, returns `reply` or raises `error`."""
 

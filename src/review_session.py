@@ -46,6 +46,7 @@ class FormReview:
     record: object                                # record_builder.Record (never mutated)
     edits: dict = field(default_factory=dict)     # field key -> value saved by the reviewer
     approved: bool = False
+    store_id: Optional[int] = None                # row id in record_store (None: not saved)
 
     @property
     def form_index(self) -> int:

@@ -23,6 +23,7 @@ Streamlit limits and how they are handled:
   "approve form" has to move to the next form.
 """
 import base64
+import sqlite3
 import threading
 import time
 from datetime import date
@@ -32,6 +33,7 @@ import pandas as pd
 import streamlit as st
 
 from src import config
+from src import record_store as store
 from src import review_session as rs
 from src.constants import (
     ALL_HEADERS,
@@ -41,6 +43,7 @@ from src.constants import (
     FLAG_REASONS,
     LIST_SEPARATOR,
     REVIEW_STATUS_APPROVED,
+    REVIEW_STATUS_PENDING,
     REVIEW_STATUS_HEADER,
     REVIEW_STATUS_KEY,
     SPLIT_FLAG_LABELS,
@@ -53,7 +56,8 @@ from src.validators import list_approved_senders
 
 st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide", initial_sidebar_state="expanded")
 
-SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירה", "export": "ייצוא"}
+SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירה", "export": "ייצוא", "records": "רשומות"}
+STEP_SCREENS = ("upload", "summary", "review", "export")  # the four steps of one run; "records" stands apart
 APPROVED_COLOR = "#1F8A73"  # Sheba teal: approved forms and high confidence
 ACCENT_COLOR = "#C8306F"    # Sheba pink: current step, highlights (see .streamlit/config.toml)
 PIPELINE_STEPS = (
@@ -87,8 +91,8 @@ PARTNER_HTML = f"""
   <div class="lx-partner-logos"><img src="{_data_uri('sheba_logo.png')}" alt="שיבא תל השומר">
   <img src="{_data_uri('moh_logo.png')}" alt="משרד הבריאות"></div></div>
 """
-PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים נשמרים רק בזיכרון של החלון הזה ונמחקים בסיום. '
-                'שום נתון אישי לא נכתב ליומן.</div>')
+PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים שהועלו נמחקים בסיום החילוץ. הרשומות נשמרות במחשב הזה בלבד '
+                'ואפשר למחוק אותן במסך הרשומות. שום נתון אישי לא נכתב ליומן.</div>')
 UPLOAD_TYPES = ["pdf", "png", "jpg", "jpeg"]
 DEV_CACHE_BANNER = ("**מצב פיתוח: DEV_CACHE פעיל.** תשובות המודל (שעלולות לכלול נתונים אישיים) נשמרות בדיסק "
                     "בתיקייה data/dev_cache, כדי שהרצה חוזרת על אותם עמודים לא תעלה כסף. "
@@ -211,9 +215,6 @@ div[class*="st-key-cardflag_"] {{
 .lx-step.active .lx-step-num, .lx-step.done .lx-step-num {{ background: {ACCENT_COLOR}; color: #FFFFFF; }}
 .lx-step-title {{ font-weight: 600; font-size: 14px; }}
 .lx-step-text {{ font-size: 12px; color: #5B6B80; line-height: 1.45; }}
-.lx-principle {{ font-size: 13px; color: #5F6E82; margin-top: 24px; }}
-.lx-principle span {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: {FLAG_COLOR};
-    margin-inline-end: 8px; }}
 .lx-legend {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: {FLAG_COLOR};
     vertical-align: middle; margin-inline-end: 4px; }}
 /* Review screen: field cards, confidence chips, sticky action bar and form image. */
@@ -308,6 +309,14 @@ def clear_all() -> None:
     go("upload", 0)
 
 
+def persist(review: rs.FormReview) -> None:
+    """Save the reviewer's corrections and approval of a form to the records database."""
+    try:
+        store.update_review(review)
+    except sqlite3.Error as exc:
+        st.session_state.notice = f"שימו לב: השינוי לא נשמר במערכת ({type(exc).__name__})."
+
+
 def reviews() -> list:
     return st.session_state.reviews or []
 
@@ -383,6 +392,11 @@ def run_extraction(files: list, progress_slot, steps_slot) -> None:
         st.session_state.run_error = outcome["error"]
         return
     st.session_state.reviews = rs.new_session(outcome["records"])
+    try:
+        store.save_run(st.session_state.reviews)  # every record is kept in the system, not only in this window
+    except sqlite3.Error as exc:
+        st.session_state.notice = None
+        st.session_state.run_error = f"הרשומות לא נשמרו במערכת ({type(exc).__name__}). אפשר להמשיך לעבוד ולייצא."
     st.session_state.run_error = None
     go("summary", 0)
     st.rerun()
@@ -390,10 +404,14 @@ def run_extraction(files: list, progress_slot, steps_slot) -> None:
 
 # ------------------------------------------------------------------ screens
 
-def screen_header(step: int, name: str, title: str, lead: str) -> None:
+def hero(kicker: str, title: str, lead: str) -> None:
     """Hero band at the top of a screen (soft pink gradient with a ring, as on the lab's Sheba web page)."""
-    st.markdown(f'<div class="lx-hero"><p class="lx-kicker">שלב {step} מתוך 4 · {name}</p>'
+    st.markdown(f'<div class="lx-hero"><p class="lx-kicker">{kicker}</p>'
                 f'<h1 class="lx-h1">{title}</h1><p class="lx-lead">{lead}</p></div>', unsafe_allow_html=True)
+
+
+def screen_header(step: int, name: str, title: str, lead: str) -> None:
+    hero(f"שלב {step} מתוך 4 · {name}", title, lead)
 
 
 def screen_upload() -> None:
@@ -426,8 +444,6 @@ def screen_upload() -> None:
         run_extraction(files, progress_slot, steps_slot)
     if st.session_state.run_error:
         st.error(f"החילוץ נכשל: {st.session_state.run_error}")
-    st.markdown('<div class="lx-principle"><span></span>העיקרון: שדה ריק ומסומן עדיף תמיד על ערך מנוחש.</div>',
-                unsafe_allow_html=True)
 
 
 def _rtl_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -663,11 +679,10 @@ def screen_review(senders: list) -> None:
                     approve_clicked = st.form_submit_button("אשר טופס ועבור לבא", type="primary", key="approve",
                                                             icon=":material/check:")
                     save_clicked = st.form_submit_button("שמור בלי לאשר", key="save")
-                    st.markdown('<span class="lx-muted">שדה ריק ומסומן עדיף על ערך מנוחש</span>',
-                                unsafe_allow_html=True)
 
         if approve_clicked:
             result = rs.approve(review, entered)
+            persist(review)
             if result.approved:
                 _after_approval(pos, result.empty)
             else:
@@ -677,11 +692,13 @@ def screen_review(senders: list) -> None:
         if save_clicked:
             rs.save_edits(review, entered)
             rs.reopen(review)
+            persist(review)
             st.session_state.notice = "התיקונים נשמרו. הטופס עדיין לא אושר."
             st.session_state.nonce += 1
             st.rerun()
         if reopen_clicked:
             rs.reopen(review)
+            persist(review)
             st.session_state.nonce += 1
             st.rerun()
 
@@ -691,6 +708,7 @@ def screen_review(senders: list) -> None:
                        "(למשל מספר דרכון):\n" + _warning_lines(pending["warnings"]), icon=":material/warning:")
             if st.button("אשר בכל זאת", key="force_approve"):
                 result = rs.approve(review, {}, force=True)
+                persist(review)
                 _after_approval(pos, result.empty)
                 st.rerun()
 
@@ -765,6 +783,96 @@ def screen_export() -> None:
     st.dataframe(view.style.apply(colour, axis=None), hide_index=True, column_config=widths)
 
 
+def open_saved(record_id: int, run_id: str) -> None:
+    """Load the run of a saved record into this window and open that record on the review screen."""
+    loaded = store.load_run(run_id)
+    pos = next((i for i, r in enumerate(loaded) if r.store_id == record_id), 0)
+    st.session_state.reviews = loaded
+    st.session_state.uploader_n += 1
+    go("review", pos)
+
+
+def screen_records() -> None:
+    try:
+        saved = store.list_records()
+    except sqlite3.Error as exc:
+        st.error(f"לא ניתן לקרוא את הרשומות השמורות ({type(exc).__name__}).", icon=":material/error:")
+        return
+    approved = sum(r["approved"] for r in saved)
+    hero("רשומות שמורות במערכת", "כל ההתחייבויות",
+         f"{len(saved)} רשומות שמורות, {approved} אושרו. רשומה לכל התחייבות, עם כל השדות. "
+         "לחצו על רשומה כדי לפתוח אותה – ליד כל שדה תופיע התמונה החתוכה מטופס ההתחייבות.")
+    if not saved:
+        st.info("עדיין אין רשומות שמורות. כל טופס שמחולץ נשמר כאן אוטומטית.", icon=":material/inbox:")
+        return
+
+    search_col, status_col = st.columns([3, 2], vertical_alignment="center")  # RTL: search on the right
+    query = search_col.text_input("חיפוש", key="records_q", label_visibility="collapsed",
+                                  placeholder="חיפוש לפי שם, ת״ז, מספר מרכזי, מספר התחייבות או קובץ")
+    status = status_col.radio("סטטוס", ["הכל", "ממתין לאישור", "אושר"], horizontal=True, key="records_status",
+                              label_visibility="collapsed")
+
+    rows, flagged = [], []
+    for item in saved:
+        review = item["review"]
+        meta = review.record.metadata
+        row = {"saved_id": item["id"], "created": item["created_at"][:10]}
+        row.update({key: review.value(key) for key in FIELD_KEYS})
+        row.update({key: meta.get(key, "") for key in ("source_file", "form_type")})
+        row[REVIEW_STATUS_KEY] = REVIEW_STATUS_APPROVED if review.approved else REVIEW_STATUS_PENDING
+        text = " ".join(str(v) for v in row.values())
+        if query and query.strip() not in text:
+            continue
+        if status != "הכל" and review.approved != (status == "אושר"):
+            continue
+        rows.append((row, item))
+        flagged.append(set(review.open_flags()))
+    st.markdown(f'<span class="lx-muted">מוצגות {len(rows)} מתוך {len(saved)} רשומות · <span class="lx-legend">'
+                '</span>שדה לבדיקה ברשומה שלא אושרה</span>', unsafe_allow_html=True)
+    if not rows:
+        return
+
+    headers = {"saved_id": "מס׳ רשומה", "created": "נקלט", **ALL_HEADERS, REVIEW_STATUS_KEY: REVIEW_STATUS_HEADER}
+    df = pd.DataFrame([row for row, _ in rows]).rename(columns=headers)
+    view = _rtl_columns(df)
+
+    def colour(frame: pd.DataFrame) -> pd.DataFrame:
+        styles = pd.DataFrame("", index=frame.index, columns=frame.columns)
+        for pos, keys in enumerate(flagged):
+            for key in keys:
+                styles.iat[pos, frame.columns.get_loc(headers[key])] = (f"background-color: {FLAG_COLOR}; "
+                                                                         "color: #1A1100; font-weight: 600")
+            status_col_ix = frame.columns.get_loc(REVIEW_STATUS_HEADER)
+            if frame.iat[pos, status_col_ix] == REVIEW_STATUS_APPROVED:
+                styles.iat[pos, status_col_ix] = f"color: {APPROVED_COLOR}; font-weight: 600"
+        return styles
+
+    # Narrow columns so the whole record fits without scrolling (the table starts scrolled to the left edge).
+    px = {"saved_id": 64, "created": 92, "first_name": 66, "last_name": 68, "id_number": 94, "central_numbers": 74,
+          "received_date": 92, "sending_entity": 62, "commitment_numbers": 78, "source_file": 92, "form_type": 88,
+          REVIEW_STATUS_KEY: 70}
+    widths = {headers[key]: st.column_config.Column(width=w) for key, w in px.items()}
+    event = st.dataframe(view.style.apply(colour, axis=None), hide_index=True, on_select="rerun",
+                         selection_mode="single-row", key=f"records_{st.session_state.nonce}", column_config=widths)
+    if event.selection.rows:
+        _, item = rows[event.selection.rows[0]]
+        open_saved(item["id"], item["run_id"])
+        st.rerun()
+
+    with st.expander("מחיקת רשומות"):
+        labels = {item["id"]: f"רשומה {item['id']} · {row['first_name']} {row['last_name']} · {row['source_file']}"
+                  for row, item in rows}
+        chosen = st.multiselect("רשומות למחיקה", list(labels), format_func=labels.get, key=f"records_delete_{st.session_state.nonce}",
+                                placeholder="בחרו רשומות")
+        if st.button("מחק לצמיתות", key="delete_records", disabled=not chosen, icon=":material/delete:"):
+            deleted = store.delete_records(chosen)
+            if any(r.store_id in chosen for r in reviews()):
+                st.session_state.reviews = None  # a deleted record must not stay open in this window
+            st.session_state.notice = f"{deleted} רשומות נמחקו."
+            go("records")
+            st.rerun()
+
+
 # ------------------------------------------------------------------ main
 
 def _sidebar_css(items: list, screen: str, pos: int) -> str:
@@ -773,12 +881,12 @@ def _sidebar_css(items: list, screen: str, pos: int) -> str:
     Streamlit buttons take only a text label, so state (current, approved, number of open flags) is drawn
     with CSS on each button's key class ("st-key-<key>").
     """
-    order = list(SCREENS)
+    order = list(STEP_SCREENS)
     rules = [f'[data-testid="stSidebar"] div.st-key-nav_{screen} button {{ background: #FBEAF2; color: #1B1A6B; '
              f'font-weight: 600; }}',
              f'[data-testid="stSidebar"] div.st-key-nav_{screen} button::before {{ background: transparent; '
              f'border: 2px solid {ACCENT_COLOR}; box-sizing: border-box; }}']
-    if items:
+    if items and screen in STEP_SCREENS:
         rules += [f'[data-testid="stSidebar"] div.st-key-nav_{s} button::before {{ background: {ACCENT_COLOR}; }}'
                   for s in order[:order.index(screen)]]
     for i, r in enumerate(items):
@@ -799,7 +907,7 @@ def sidebar(has_results: bool) -> None:
         st.markdown(BRAND_HTML + _sidebar_css(items, st.session_state.screen, st.session_state.pos),
                     unsafe_allow_html=True)
         for screen, label in SCREENS.items():
-            st.button(label, key=f"nav_{screen}", type="tertiary", disabled=not has_results and screen != "upload",
+            st.button(label, key=f"nav_{screen}", type="tertiary", disabled=not has_results and screen not in ("upload", "records"),
                       on_click=go, args=(screen,), width="stretch")
         approved = len(items) - len(rs.unapproved(items))
         st.markdown(f'<div class="lx-section" style="display:flex;justify-content:space-between">'
@@ -813,7 +921,7 @@ def sidebar(has_results: bool) -> None:
             st.button(f"{i + 1} {r.record.metadata.get('form_type', '') or 'לא מזוהה'}", key=f"queue_{i}",
                       type="tertiary", on_click=go, args=("review", i), width="stretch")
         st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
-        if st.button("נקה הכל", help="מוחק את כל התוצאות מהזיכרון", key="clear_all", icon=":material/delete:",
+        if st.button("נקה הכל", help="מנקה את המסך. הרשומות נשארות שמורות במסך הרשומות", key="clear_all", icon=":material/delete:",
                      width="stretch"):
             clear_all()
             st.rerun()
@@ -827,7 +935,7 @@ def main() -> None:
         st.error(DEV_CACHE_BANNER, icon="⚠️")
 
     has_results = bool(reviews())
-    if not has_results:
+    if not has_results and st.session_state.screen not in ("upload", "records"):
         st.session_state.screen = "upload"
     sidebar(has_results)
 
@@ -842,6 +950,8 @@ def main() -> None:
         screen_review(list_approved_senders(config.SENDERS_PATH))
     elif screen == "export":
         screen_export()
+    elif screen == "records":
+        screen_records()
     else:
         screen_upload()
 

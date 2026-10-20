@@ -95,3 +95,6 @@ OUTPUT_DIR = DATA_DIR / "output"
 REFERENCE_DIR = DATA_DIR / "reference"
 SENDERS_PATH = REFERENCE_DIR / "approved_senders.json"
 PROMPT_PATH = BASE_DIR / "prompts" / "extraction_prompt.txt"
+# Saved records (fields, review status, crops and page previews): a local SQLite file, git-ignored.
+# It holds personal data: keep it on the lab computer only; the Records screen can delete rows.
+RECORDS_DB = Path(os.getenv("RECORDS_DB") or DATA_DIR / "records" / "labextract.db")

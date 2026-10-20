@@ -161,3 +161,46 @@ def test_export_open_button_jumps_to_the_unapproved_form():
     assert [b.key for b in at.button if b.key.startswith("open_")] == ["open_1"]
     at.button(key="open_1").click().run()
     assert at.session_state["screen"] == "review" and at.session_state["pos"] == 1
+
+
+def test_records_screen_lists_saved_records():
+    from src import record_store as store
+
+    reviews = rs.new_session([_record(1), _record(2, flags={"id_number": "invalid_id"}, id_number="000000019")])
+    store.save_run(reviews)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["screen"] = "records"
+    at.run()
+    assert not at.exception
+    assert len(at.dataframe[0].value) == 2
+
+
+def test_saved_run_is_reopened_with_values_crops_and_status():
+    from src import record_store as store
+
+    reviews = rs.new_session([_record(1), _record(2)])
+    run_id = store.save_run(reviews)
+    rs.approve(reviews[1], {"first_name": "יעל"})
+    store.update_review(reviews[1])
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["reviews"] = store.load_run(run_id)
+    at.session_state["screen"] = "review"
+    at.session_state["pos"] = 1
+    at.run()
+    assert not at.exception
+    assert _input(at, "first_name").value == "יעל"
+    assert len(at.image) >= len(FIELD_KEYS)  # a crop next to every field, plus the page image
+
+
+def test_approval_on_the_review_screen_is_saved_in_the_system():
+    from src import record_store as store
+
+    reviews = rs.new_session([_record(1), _record(2)])
+    run_id = store.save_run(reviews)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["reviews"] = reviews
+    at.session_state["screen"] = "review"
+    at.run()
+    at.button(key="approve").click().run()
+    assert not at.exception
+    assert [r.approved for r in store.load_run(run_id)] == [True, False]

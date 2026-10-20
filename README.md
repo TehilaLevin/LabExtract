@@ -14,6 +14,20 @@ streamlit run app.py            # opens http://localhost:8501
 
 `.env` must hold `CLAUDE_API_KEY` (or `ANTHROPIC_API_KEY`; see `.env.example`); PDFs need Poppler.
 
+## Saved records (`src/record_store.py`)
+
+Every extracted form is saved in the system as one record per commitment: all seven fields, the review
+flags, the reviewer's corrections, the approval status, and the images shown on the review screen (the
+crop of each field and the page previews). Records are saved automatically after each extraction and
+updated on every approve / save / reopen.
+
+- The **Records** screen (רשומות) lists every saved record with search and a status filter. Clicking a
+  record opens its run on the review screen, with the cropped image from the commitment form next to
+  every field, ready to correct and approve.
+- Storage: a local SQLite file, `data/records/labextract.db` (override with `RECORDS_DB`), git-ignored.
+  It holds personal data: keep it on the lab computer only. Records can be deleted from the Records
+  screen. Excel export stays available as an optional extra.
+
 ## Model: Claude
 
 Claude (`claude-opus-5-5` by default) is the only model provider. Every model call (orientation, splitting,
