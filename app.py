@@ -482,7 +482,7 @@ def overview_section(counts: dict) -> None:
     location is guessed). Orange is not used: it is reserved for fields that need review.
     """
     st.markdown('<div class="lx-fields-head" style="margin-top:8px"><strong style="font-size:18px">'
-                'סקירת פעילות לפי גורם שולח</strong></div>', unsafe_allow_html=True)
+                'סקירת פעילות לפי גורם שולח (טפסים מאושרים)</strong></div>', unsafe_allow_html=True)
     rows = overview.breakdown(counts)
     if not rows:
         st.markdown('<div class="lx-empty">עדיין אין נתונים להצגה.</div>', unsafe_allow_html=True)
@@ -924,7 +924,7 @@ def screen_database() -> None:
 </div>""", unsafe_allow_html=True)
 
     try:
-        overview_section(record_store.sender_counts())
+        overview_section(record_store.sender_counts(approved_only=True))
     except Exception as exc:
         st.warning(f"הסקירה לא זמינה ({type(exc).__name__}).")
 
