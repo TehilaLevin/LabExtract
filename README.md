@@ -92,11 +92,13 @@ measured on the samples may not carry over.
 5. **Database ("מאגר")** – every form is saved to a local SQLite file (`data/db/labextract.db`, `src/record_store.py`)
    when extracted (pending) and updated on every save / approval, so records survive closing the browser. The screen
    searches all fields, filters by status and sender, downloads the result as Excel (open flags of unapproved forms
-   in orange) and deletes everything ("מחק את כל המאגר"). Stored: field values, metadata, status, reason codes of
-   open flags. Not stored: images, crops, suggestions, model notes. `DB_ENABLED=false` turns it off.
+   in orange), opens a saved form on the review screen ("פתח") with the cropped image next to every field, and
+   deletes everything ("מחק את כל המאגר"). Stored: field values, metadata, status, reason codes of open flags, the
+   engine's record and the reviewer's edits, and the field crops and page previews (so a saved form can be reopened).
+   Not stored: the uploaded files. `DB_ENABLED=false` turns it off.
 
-Privacy: uploads, crops and page previews live only in the browser session's memory (`st.session_state`),
-never in a shared cache, a log or on disk; the pipeline's temp folder is deleted after every run. The one exception
+Privacy: uploads live only in the browser session's memory (`st.session_state`), never in a shared cache, a log
+or on disk; the pipeline's temp folder is deleted after every run. The one exception
 is the database above: it holds patient data on disk (git-ignored, local only), so keep the folder on an
 access-controlled machine and use "מחק את כל המאגר" before sharing the project. "נקה הכל" drops
 everything. `.streamlit/config.toml` serves the app on `localhost` only and turns off Streamlit's usage statistics;

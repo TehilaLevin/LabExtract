@@ -22,10 +22,12 @@ Streamlit limits and how they are handled:
 - Navigation is a plain session-state value, not st.tabs: tabs cannot be switched from code, and
   "approve form" has to move to the next form.
 """
+import base64
 import threading
 import uuid
 import time
 from datetime import date, datetime
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -45,6 +47,7 @@ from src.constants import (
     FLAG_REASONS,
     LIST_SEPARATOR,
     REVIEW_STATUS_APPROVED,
+    REVIEW_STATUS_PENDING,
     REVIEW_STATUS_HEADER,
     REVIEW_STATUS_KEY,
     SPLIT_FLAG_LABELS,
@@ -58,7 +61,9 @@ from src.validators import list_approved_senders
 st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide", initial_sidebar_state="expanded")
 
 SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירה", "export": "ייצוא", "database": "מאגר"}
-APPROVED_COLOR = "#5EEAD4"  # mint: actions and approvals ("control room" design, see .streamlit/config.toml)
+STEP_SCREENS = ("upload", "summary", "review", "export")  # the four steps of one run; "database" stands apart
+APPROVED_COLOR = "#1F8A73"  # Sheba teal: approved forms and high confidence
+ACCENT_COLOR = "#C8306F"    # Sheba pink: current step, highlights (see .streamlit/config.toml)
 PIPELINE_STEPS = (
     ("פיצול לטפסים", "כל עמוד: טופס חדש או המשך של הקודם"),
     ("זיהוי סוג טופס", "קופה או בית חולים, מרשימה סגורה"),
@@ -68,15 +73,35 @@ PIPELINE_STEPS = (
 )
 # Pipeline step shown as active for each progress stage reported by process_files.
 STAGE_STEP = {"start": 0, "split": 0, "extract": 2}
-BRAND_HTML = """
+# Column widths (px) of the export-shaped tables: all eleven columns fit without scrolling, because
+# st.dataframe starts scrolled to the left edge, which would hide the first fields of a right-to-left table.
+EXPORT_WIDTHS = {"first_name": 70, "last_name": 72, "id_number": 96, "central_numbers": 76, "received_date": 94,
+                 "sending_entity": 68, "commitment_numbers": 80, "source_file": 150, "page_numbers": 62,
+                 "form_type": 116, REVIEW_STATUS_KEY: 76}
+ASSETS = Path(__file__).resolve().parent / "assets"
+
+
+def _data_uri(name: str) -> str:
+    """A logo from assets/ as a data: URI, so it can sit inside sidebar HTML ("" when the file is missing)."""
+    path = ASSETS / name
+    return f"data:image/png;base64,{base64.b64encode(path.read_bytes()).decode()}" if path.exists() else ""
+
+
+# Logos: the Central Virology Laboratory at the top of the sidebar; Sheba Medical Center and the Ministry of
+# Health in the page footer ("in partnership with"). The look follows the lab's page on the Sheba web site.
+BRAND_HTML = f"""
 <div class="lx-brand">
-  <div class="lx-logo"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="#06221E"
-    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12v12H4z"/><path d="M7 8h6M7 11h6M7 14h3"/></svg></div>
-  <div><div class="lx-name" dir="ltr">LabExtract</div><div class="lx-sub">חילוץ טפסי התחייבות</div></div>
+  <img class="lx-lab-logo" src="{_data_uri('lab_logo.png')}" alt="המעבדה המרכזית לנגיפים">
+  <div><div class="lx-name" dir="ltr">LabExtract</div><div class="lx-sub">המעבדה המרכזית לנגיפים<br>חילוץ טפסי התחייבות</div></div>
 </div>
 """
-PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים נשמרים רק בזיכרון של החלון הזה ונמחקים בסיום. '
-                'שום נתון אישי לא נכתב ליומן.</div>')
+PARTNER_HTML = f"""
+<footer class="lx-partner"><span>בשיתוף:</span>
+  <div class="lx-partner-logos"><img src="{_data_uri('sheba_logo.png')}" alt="שיבא תל השומר">
+  <img src="{_data_uri('moh_logo.png')}" alt="משרד הבריאות"></div></footer>
+"""
+PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים שהועלו נמחקים בסיום החילוץ. הרשומות נשמרות במחשב הזה בלבד '
+                'ואפשר למחוק אותן במסך המאגר. שום נתון אישי לא נכתב ליומן.</div>')
 UPLOAD_TYPES = ["pdf", "png", "jpg", "jpeg"]
 DEV_CACHE_BANNER = ("**מצב פיתוח: DEV_CACHE פעיל.** תשובות המודל (שעלולות לכלול נתונים אישיים) נשמרות בדיסק "
                     "בתיקייה data/dev_cache, כדי שהרצה חוזרת על אותם עמודים לא תעלה כסף. "
@@ -96,44 +121,44 @@ div[class*="st-key-cardflag_"] {{
     border: 2px solid {FLAG_COLOR} !important;
     background: rgba(255, 165, 0, 0.10);
 }}
-.flag-reason {{ color: {FLAG_COLOR}; font-weight: 600; }}
-.suggestion {{ color: {FLAG_COLOR}; }}
+.flag-reason {{ color: #9A5800; font-weight: 600; }}  /* dark orange: readable on white (#FFA500 is too light for text) */
+.suggestion {{ color: #9A5800; }}
 
-/* Layout and typography of the "control room" design. Colours and fonts come from the theme. */
+/* Layout and typography. Colours come from the lab and Ministry of Health logos (see .streamlit/config.toml). */
 [data-testid="stHeader"] {{ background: transparent; }}
 .block-container {{ padding-top: 2.5rem; max-width: 1400px; }}
-.lx-kicker {{ font-size: 13px; font-weight: 600; color: {APPROVED_COLOR}; margin: 0 0 6px; }}
-.lx-h1 {{ font-size: 34px; font-weight: 700; line-height: 1.15; margin: 0 0 10px; padding: 0; }}
-.lx-lead {{ font-size: 16px; color: #B4BFD6; margin: 0; max-width: 760px; }}
-.lx-muted {{ font-size: 13px; color: #8390AC; }}
-.lx-section {{ font-size: 12px; font-weight: 500; color: #93A0BC; margin: 18px 0 8px; }}
+.lx-kicker {{ font-size: 13px; font-weight: 600; color: {ACCENT_COLOR}; margin: 0 0 6px; }}
+.lx-h1 {{ font-size: 40px; font-weight: 800; line-height: 1.1; margin: 0 0 10px; padding: 0; color: #1B1A6B; }}
+.lx-lead {{ font-size: 16px; color: #44546B; margin: 0; max-width: 760px; }}
+.lx-muted {{ font-size: 13px; color: #5F6E82; }}
+.lx-section {{ font-size: 12px; font-weight: 500; color: #5B6B80; margin: 18px 0 8px; }}
 
-/* Primary buttons: dark text on mint. */
-[data-testid="stBaseButton-primary"] {{ color: #06221E; font-weight: 600; border: none; }}
-[data-testid="stBaseButton-primary"]:disabled {{ background: #172036; color: #5B6782; }}
+/* Primary buttons: white text on lab blue. */
+[data-testid="stBaseButton-primary"] {{ color: #FFFFFF; font-weight: 600; border: none; }}
+[data-testid="stBaseButton-primary"]:disabled {{ background: #ECEBF4; color: #8D8CA8; }}
 .st-key-extract button, .st-key-start_review button {{
     min-height: 52px; padding: 0 28px; border-radius: 12px; font-size: 16px;
 }}
-.st-key-extract button:not(:disabled), .st-key-start_review button {{ box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+.st-key-extract button:not(:disabled), .st-key-start_review button {{ box-shadow: 0 0 0 4px rgba(27, 26, 107, 0.15); }}
 
 /* Upload drop zone. Streamlit's built-in English texts are hidden (font-size: 0) and replaced with
    Hebrew through ::before / ::after; the widget itself and its behaviour stay Streamlit's. */
 [data-testid="stFileUploaderDropzone"] {{
-    border: 2px dashed #2F5F5A; background: #0C1A1F; border-radius: 16px; padding: 36px 24px;
+    border: 2px dashed #E7A3C4; background: #FFF7FB; border-radius: 16px; padding: 36px 24px;
     display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;
 }}
 [data-testid="stFileUploaderDropzone"]::before {{
-    content: ""; width: 64px; height: 64px; border-radius: 16px; background: #0D2A27 center / 32px no-repeat
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%235EEAD4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21V7M10 12l6-6 6 6'/%3E%3Cpath d='M6 20v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E");
+    content: ""; width: 64px; height: 64px; border-radius: 16px; background: #FBEAF2 center / 32px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%23C8306F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21V7M10 12l6-6 6 6'/%3E%3Cpath d='M6 20v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E");
 }}
 [data-testid="stFileUploaderDropzone"]::before {{ order: -2; }}
 [data-testid="stFileUploaderDropzoneInstructions"] {{ order: -1; }}
 [data-testid="stFileUploaderDropzoneInstructions"] span {{ font-size: 0; }}
 [data-testid="stFileUploaderDropzoneInstructions"] > div::before {{
-    content: "גררו קבצים לכאן"; display: block; font-size: 20px; font-weight: 600; color: #E8EDF7;
+    content: "גררו קבצים לכאן"; display: block; font-size: 20px; font-weight: 600; color: #1B1A6B;
 }}
 [data-testid="stFileUploaderDropzoneInstructions"] > div::after {{
-    content: "PDF · PNG · JPG · JPEG · עד 500MB לקובץ"; display: block; font-size: 12px; color: #8390AC; margin-top: 6px;
+    content: "PDF · PNG · JPG · JPEG · עד 500MB לקובץ"; display: block; font-size: 12px; color: #5F6E82; margin-top: 6px;
 }}
 [data-testid="stFileUploaderDropzone"] button p {{ font-size: 0; }}
 [data-testid="stFileUploaderDropzone"] button p::after {{ content: "בחירה מהמחשב"; font-size: 14px; }}
@@ -141,31 +166,35 @@ div[class*="st-key-cardflag_"] {{
 
 /* Sidebar: brand, step navigation, batch list. */
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 4px; }}
-.lx-brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }}
-.lx-logo {{ width: 34px; height: 34px; border-radius: 9px; background: {APPROVED_COLOR};
-    display: flex; align-items: center; justify-content: center; }}
-.lx-name {{ font-weight: 700; font-size: 19px; line-height: 1.2; }}
-.lx-sub {{ font-size: 12px; color: #93A0BC; }}
-.lx-privacy {{ font-size: 12px; color: #8390AC; border-top: 1px solid #1E2944; padding-top: 14px; margin-top: 18px; }}
-.lx-empty {{ border: 1px dashed #243049; border-radius: 10px; padding: 16px 12px; font-size: 13px;
-    color: #8390AC; text-align: center; }}
+.lx-brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 40px; }}
+.lx-lab-logo {{ width: 56px; height: 56px; flex: none; }}
+.lx-partner {{ display: flex; flex-direction: column; gap: 10px; border-top: 1px solid #E3E2EE; padding-top: 18px;
+    margin-top: 48px; font-size: 14px; font-weight: 600; color: #1B1A6B; }}
+.lx-partner-logos {{ display: flex; align-items: center; gap: 32px; flex-wrap: wrap; }}
+.lx-partner-logos img {{ height: 56px; width: auto; max-width: 100%; }}
+.lx-partner-logos img + img {{ height: 68px; }}
+.lx-name {{ font-weight: 700; font-size: 20px; line-height: 1.2; color: #1B1A6B; }}
+.lx-sub {{ font-size: 12px; color: #5B6B80; }}
+.lx-privacy {{ font-size: 12px; color: #5F6E82; border-top: 1px solid #DCE4EC; padding-top: 14px; margin-top: 18px; }}
+.lx-empty {{ border: 1px dashed #C3CEDA; border-radius: 10px; padding: 16px 12px; font-size: 13px;
+    color: #5F6E82; text-align: center; }}
 [data-testid="stSidebar"] [class*="st-key-nav_"] button,
 [data-testid="stSidebar"] [class*="st-key-queue_"] button {{
-    width: 100%; justify-content: flex-start; border: none; background: transparent; color: #C7D0E2;
+    width: 100%; justify-content: flex-start; border: none; background: transparent; color: #2E3E55;
     min-height: 40px; padding: 6px 12px; border-radius: 8px;
 }}
 [data-testid="stSidebar"] [class*="st-key-nav_"] button:hover,
-[data-testid="stSidebar"] [class*="st-key-queue_"] button:hover {{ background: #172036; color: #E8EDF7; }}
-[data-testid="stSidebar"] [class*="st-key-nav_"] button:disabled {{ color: #5B6782; background: transparent; }}
+[data-testid="stSidebar"] [class*="st-key-queue_"] button:hover {{ background: #FBEAF2; color: #1B1A6B; }}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button:disabled {{ color: #9AA6B5; background: transparent; }}
 [data-testid="stSidebar"] [class*="st-key-nav_"] button::before {{
-    content: ""; width: 8px; height: 8px; border-radius: 50%; background: #243049; margin-inline-end: 10px; flex: none;
+    content: ""; width: 8px; height: 8px; border-radius: 50%; background: #C3CEDA; margin-inline-end: 10px; flex: none;
 }}
 [data-testid="stSidebar"] [class*="st-key-nav_"] button > div,
 [data-testid="stSidebar"] [class*="st-key-queue_"] button > div {{ flex: 1; min-width: 0; justify-content: flex-start; }}
 [data-testid="stSidebar"] [class*="st-key-queue_"] button {{ font-size: 13px; min-height: 36px; }}
 [data-testid="stSidebar"] [class*="st-key-queue_"] button::after {{
     content: ""; margin-inline-start: auto; min-width: 22px; height: 22px; border-radius: 999px; font-size: 11px;
-    font-weight: 600; display: inline-flex; align-items: center; justify-content: center; background: #172036;
+    font-weight: 600; display: inline-flex; align-items: center; justify-content: center; background: #FBEAF2;
 }}
 [data-testid="stSidebar"] [class*="st-key-queue_"] [data-testid="stMarkdownContainer"] p {{
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -173,78 +202,94 @@ div[class*="st-key-cardflag_"] {{
 
 /* Stat tiles and pipeline steps. */
 .lx-tiles {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 8px 0 20px; }}
-.lx-tile {{ background: #111829; border: 1px solid #1E2944; border-radius: 12px; padding: 16px 18px; }}
-.lx-tile.flag {{ background: #1A1508; border-color: #5C3D00; }}
-.lx-tile.ok {{ background: #0D1F1D; border-color: #1C4A44; }}
-.lx-tile-label {{ font-size: 13px; color: #93A0BC; }}
-.lx-tile.flag .lx-tile-label {{ color: #FFC15C; }}
+.lx-tile {{ background: #FFFFFF; border: 1px solid #DCE4EC; border-radius: 12px; padding: 16px 18px; }}
+.lx-tile.flag {{ background: #FFF6E5; border-color: #F5C77A; }}
+.lx-tile.ok {{ background: #EEF8F5; border-color: #A9DCCD; }}
+.lx-tile-label {{ font-size: 13px; color: #5B6B80; }}
+.lx-tile.flag .lx-tile-label {{ color: #9A5800; }}
 .lx-tile.ok .lx-tile-label {{ color: {APPROVED_COLOR}; }}
 .lx-tile-value {{ font-family: "JetBrains Mono", monospace; font-size: 32px; font-weight: 600; line-height: 1.3; }}
 .lx-tile.flag .lx-tile-value {{ color: {FLAG_COLOR}; }}
 .lx-tile.ok .lx-tile-value {{ color: {APPROVED_COLOR}; }}
-.lx-tile-note {{ font-size: 12px; color: #8390AC; }}
-.lx-tile.flag .lx-tile-note {{ color: #C9A86A; }}
-.lx-bar {{ height: 6px; background: #12302C; border-radius: 3px; overflow: hidden; margin-top: 8px; }}
+.lx-tile-note {{ font-size: 12px; color: #5F6E82; }}
+.lx-tile.flag .lx-tile-note {{ color: #8A6420; }}
+.lx-bar {{ height: 6px; background: #D0EDE5; border-radius: 3px; overflow: hidden; margin-top: 8px; }}
 .lx-bar > div {{ height: 100%; background: {APPROVED_COLOR}; }}
 .lx-steps {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }}
 .lx-step {{ display: flex; flex-direction: column; gap: 6px; border-radius: 12px; padding: 14px;
-    background: #111829; border: 1px solid #1E2944; }}
-.lx-step.active {{ background: #0D1F1D; border-color: {APPROVED_COLOR}; }}
+    background: #FFFFFF; border: 1px solid #DCE4EC; }}
+.lx-step.active {{ background: #FBEAF2; border-color: {ACCENT_COLOR}; }}
 .lx-step-num {{ width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center;
-    justify-content: center; font-size: 12px; font-weight: 600; background: #172036; color: #93A0BC; }}
-.lx-step.active .lx-step-num, .lx-step.done .lx-step-num {{ background: {APPROVED_COLOR}; color: #06221E; }}
+    justify-content: center; font-size: 12px; font-weight: 600; background: #FBEAF2; color: #5B6B80; }}
+.lx-step.active .lx-step-num, .lx-step.done .lx-step-num {{ background: {ACCENT_COLOR}; color: #FFFFFF; }}
 .lx-step-title {{ font-weight: 600; font-size: 14px; }}
-.lx-step-text {{ font-size: 12px; color: #93A0BC; line-height: 1.45; }}
-.lx-principle {{ font-size: 13px; color: #8390AC; margin-top: 24px; }}
-.lx-principle span {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: {FLAG_COLOR};
-    margin-inline-end: 8px; }}
+.lx-step-text {{ font-size: 12px; color: #5B6B80; line-height: 1.45; }}
 .lx-legend {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: {FLAG_COLOR};
     vertical-align: middle; margin-inline-end: 4px; }}
 /* Review screen: field cards, confidence chips, sticky action bar and form image. */
-div[class*="st-key-cardok_"] {{ background: #111829; }}
-div[class*="st-key-cardflag_"] {{ background: #1A1508 !important; }}
-div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 220px; object-fit: contain; background: #F4F2EC;
+div[class*="st-key-cardok_"] {{ background: #FFFFFF; }}
+div[class*="st-key-cardflag_"] {{ background: #FFF6E5 !important; }}
+div[class*="st-key-card"] [data-testid="stImage"] img {{ max-height: 220px; object-fit: contain; background: #FFFFFF;
     border-radius: 8px; }}
 .lx-card-head {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; }}
 .lx-chip {{ font-size: 11px; font-weight: 600; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }}
-.lx-chip.ok {{ color: {APPROVED_COLOR}; background: #0D2A27; }}
-.lx-chip.warn {{ color: #FFC15C; background: #2A1E05; }}
+.lx-chip.ok {{ color: {APPROVED_COLOR}; background: #E2F4EF; }}
+.lx-chip.warn {{ color: #9A5800; background: #FFEBC7; }}
 .lx-chip.big {{ font-size: 12px; padding: 3px 10px; border: 1px solid currentColor; }}
 .flag-reason {{ font-size: 13px; margin-top: 6px; }}
 .lx-title-row {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }}
 .lx-title-row .lx-h1 {{ font-size: 30px; margin: 0; }}
-.lx-dim {{ color: #6F7C99; font-weight: 500; }}
+.lx-dim {{ color: #7A889B; font-weight: 500; }}
 .lx-mono {{ font-family: "JetBrains Mono", monospace; }}
 .lx-fields-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }}
 .lx-approved {{ font-weight: 600; color: {APPROVED_COLOR}; }}
 .lx-outline {{ display: inline-block; width: 12px; height: 12px; border: 2px solid {FLAG_COLOR}; border-radius: 3px;
     box-sizing: border-box; vertical-align: middle; margin-inline-end: 6px; }}
-.st-key-actionbar {{ position: sticky; bottom: 0; z-index: 5; background: #0E1422; border: 1px solid #1E2944;
+.st-key-actionbar {{ position: sticky; bottom: 0; z-index: 5; background: #FFFFFF; border: 1px solid #DCE4EC;
     border-radius: 14px; padding: 12px 14px; margin-top: 8px; }}
 .st-key-approve button {{ min-height: 50px; padding: 0 24px; border-radius: 12px; font-size: 16px;
-    box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
+    box-shadow: 0 0 0 4px rgba(27, 26, 107, 0.15); }}
 .st-key-save button, .st-key-reopen button {{ min-height: 50px; border-radius: 12px; }}
 .st-key-force_approve button {{ background: {FLAG_COLOR}; color: #1A1100; border: none; font-weight: 600; min-height: 44px; }}
 [data-testid="stColumn"]:has(.st-key-formimage) {{ position: sticky; top: 16px; align-self: flex-start; }}
 /* Export screen. */
-.st-key-downloadcard, .st-key-waitingcard {{ background: #111829; border-radius: 16px; padding: 6px; }}
-.st-key-waitingcard {{ background: #1A1508; border-color: #5C3D00 !important; }}
+.st-key-downloadcard, .st-key-waitingcard {{ background: #FFFFFF; border-radius: 16px; padding: 6px; }}
+.st-key-waitingcard {{ background: #FFF6E5; border-color: #F5C77A !important; }}
 .lx-file {{ display: flex; align-items: center; gap: 14px; }}
-.lx-file-icon {{ width: 52px; height: 52px; border-radius: 12px; flex: none; background: #0D2A27 center / 26px no-repeat
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26' fill='none' stroke='%235EEAD4' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 3h9l5 5v15H7z'/%3E%3Cpath d='M16 3v5h5'/%3E%3Cpath d='M10.5 13l5 6M15.5 13l-5 6'/%3E%3C/svg%3E"); }}
+.lx-file-icon {{ width: 52px; height: 52px; border-radius: 12px; flex: none; background: #FBEAF2 center / 26px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26' fill='none' stroke='%23C8306F' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 3h9l5 5v15H7z'/%3E%3Cpath d='M16 3v5h5'/%3E%3Cpath d='M10.5 13l5 6M15.5 13l-5 6'/%3E%3C/svg%3E"); }}
 .lx-file bdi {{ font-size: 15px; font-weight: 500; }}
 .st-key-download button {{ min-height: 56px; border-radius: 12px; font-size: 17px; }}
-.st-key-download button:not(:disabled) {{ box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15); }}
-.lx-ready {{ display: flex; flex-direction: column; gap: 10px; background: #0D1F1D; border: 1px solid #1C4A44;
+.st-key-download button:not(:disabled) {{ box-shadow: 0 0 0 4px rgba(27, 26, 107, 0.15); }}
+.lx-ready {{ display: flex; flex-direction: column; gap: 10px; background: #EEF8F5; border: 1px solid #A9DCCD;
     border-radius: 16px; padding: 22px; }}
 .lx-ready strong {{ font-size: 18px; color: {APPROVED_COLOR}; }}
-.lx-ready span {{ font-size: 14px; color: #A8C9C3; }}
+.lx-ready span {{ font-size: 14px; color: #2F6A5D; }}
 .lx-waiting {{ display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 14px; }}
-.lx-waiting span {{ font-size: 13px; color: #C9B48A; }}
-.lx-waiting em {{ font-style: normal; font-size: 12px; color: #FFC15C; }}
-.st-key-waitingcard [data-testid="stAlertContainer"] {{ background: transparent; color: #FFC15C; font-weight: 600;
+.lx-waiting span {{ font-size: 13px; color: #8A6420; }}
+.lx-waiting em {{ font-style: normal; font-size: 12px; color: #9A5800; }}
+.st-key-waitingcard [data-testid="stAlertContainer"] {{ background: transparent; color: #9A5800; font-weight: 600;
     font-size: 17px; padding: 4px 4px 8px; }}
-[class*="st-key-open_"] button {{ border-color: #5C3D00; color: #FFC15C; background: transparent; min-height: 36px; }}
+[class*="st-key-open_"] button {{ border-color: #F5C77A; color: #9A5800; background: transparent; min-height: 36px; }}
+/* Sheba look: hero band with a soft pink gradient, decorative rings, round cards and pill buttons. */
+.lx-hero {{ position: relative; overflow: hidden; border-radius: 28px; padding: 30px 34px 28px; margin-bottom: 22px;
+    background: radial-gradient(circle at 70% 40%, #FFFFFF 0%, #FBEAF2 55%, #F4D3E4 100%); }}
+.lx-hero::after {{ content: ""; position: absolute; width: 360px; height: 360px; left: -150px; top: -60px;
+    border-radius: 50%; border: 26px solid rgba(217, 63, 135, 0.45); pointer-events: none; }}
+.lx-hero::before {{ content: ""; position: absolute; width: 300px; height: 300px; left: -40px; top: -190px;
+    border-radius: 50%; border: 18px solid rgba(77, 182, 160, 0.35); pointer-events: none; }}
+.lx-hero > * {{ position: relative; z-index: 1; }}
+.lx-hero .lx-lead {{ margin-bottom: 0; color: #3A3963; }}
+.stApp::before {{ content: ""; position: fixed; width: 520px; height: 520px; left: -260px; bottom: -260px;
+    border-radius: 50%; border: 34px solid rgba(217, 63, 135, 0.18); pointer-events: none; z-index: 0; }}
+.stApp::after {{ content: ""; position: fixed; width: 420px; height: 420px; left: 120px; bottom: -330px;
+    border-radius: 50%; border: 24px solid rgba(77, 182, 160, 0.16); pointer-events: none; z-index: 0; }}
+[data-testid="stMain"], [data-testid="stSidebar"] {{ position: relative; z-index: 1; }}
+.lx-tile, .lx-step, .lx-ready {{ border-radius: 22px; box-shadow: 0 6px 22px rgba(27, 26, 107, 0.06); }}
+div[class*="st-key-card"], .st-key-formimage, .st-key-downloadcard, .st-key-waitingcard, .st-key-actionbar {{
+    border-radius: 22px !important; box-shadow: 0 6px 22px rgba(27, 26, 107, 0.06); }}
+[data-testid="stBaseButton-secondary"] {{ border-color: #1B1A6B; color: #1B1A6B; }}
+.stApp button[data-testid^="stBaseButton-"]:not([data-testid="stBaseButton-tertiary"]) {{ border-radius: 999px !important; }}
 </style>
 """
 
@@ -468,9 +513,14 @@ def overview_section(counts: dict) -> None:
 
 # ------------------------------------------------------------------ screens
 
+def hero(kicker: str, title: str, lead: str) -> None:
+    """Hero band at the top of a screen (soft pink gradient with a ring, as on the lab's Sheba web page)."""
+    st.markdown(f'<div class="lx-hero"><p class="lx-kicker">{kicker}</p>'
+                f'<h1 class="lx-h1">{title}</h1><p class="lx-lead">{lead}</p></div>', unsafe_allow_html=True)
+
+
 def screen_header(step: int, name: str, title: str, lead: str) -> None:
-    st.markdown(f'<p class="lx-kicker">שלב {step} מתוך 4 · {name}</p><h1 class="lx-h1">{title}</h1>'
-                f'<p class="lx-lead">{lead}</p>', unsafe_allow_html=True)
+    hero(f"שלב {step} מתוך 4 · {name}", title, lead)
 
 
 def screen_upload() -> None:
@@ -503,8 +553,6 @@ def screen_upload() -> None:
         run_extraction(files, progress_slot, steps_slot)
     if st.session_state.run_error:
         st.error(f"החילוץ נכשל: {st.session_state.run_error}")
-    st.markdown('<div class="lx-principle"><span></span>העיקרון: שדה ריק ומסומן עדיף תמיד על ערך מנוחש.</div>',
-                unsafe_allow_html=True)
 
 
 def _rtl_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -516,16 +564,13 @@ def screen_summary() -> None:
     items = reviews()
     flagged = sum(len(r.record.flags) for r in items)
     approved = len(items) - len(rs.unapproved(items))
-    head_col, action_col = st.columns([3, 2], vertical_alignment="bottom")
-    with head_col:
-        screen_header(2, "סיכום", "החילוץ הסתיים",
-                      f"{len(items)} טפסים עובדו, {flagged} שדות סומנו לבדיקה, {approved} טפסים אושרו.")
+    screen_header(2, "סיכום", "החילוץ הסתיים",
+                  f"{len(items)} טפסים עובדו, {flagged} שדות סומנו לבדיקה, {approved} טפסים אושרו.")
     nxt = rs.next_unapproved(items, -1)
-    with action_col:
-        if nxt is not None and st.button("התחל סקירה מהטופס הראשון שלא אושר", type="primary", key="start_review",
-                                         icon=":material/arrow_back:", icon_position="right"):
-            go("review", nxt)
-            st.rerun()
+    if nxt is not None and st.button("התחל סקירה מהטופס הראשון שלא אושר", type="primary", key="start_review",
+                                     icon=":material/arrow_back:", icon_position="right"):
+        go("review", nxt)
+        st.rerun()
 
     df = rs.summary_frame(items)
     files = df["source_file"].nunique()
@@ -543,7 +588,7 @@ def screen_summary() -> None:
   <div class="lx-tile flag"><div class="lx-tile-label">אזהרות טופס</div><div class="lx-tile-value">{warnings}</div>
     <div class="lx-tile-note">ב־{warning_forms} טפסים · פיצול או חילוץ</div></div>
   <div class="lx-tile ok"><div class="lx-tile-label">אושרו</div>
-    <div class="lx-tile-value">{approved}<span style="font-size:18px;color:#3E8F84"> / {len(items)}</span></div>
+    <div class="lx-tile-value">{approved}<span style="font-size:18px;color:#4E9C8A"> / {len(items)}</span></div>
     <div class="lx-bar"><div style="width:{share}%"></div></div></div>
 </div>""", unsafe_allow_html=True)
 
@@ -567,7 +612,7 @@ def screen_summary() -> None:
                 out.append("")
         return out
 
-    st.markdown('<div class="lx-section" style="font-size:18px;font-weight:600;color:#E8EDF7">כל הטפסים</div>'
+    st.markdown('<div class="lx-section" style="font-size:18px;font-weight:600;color:#1B1A6B">כל הטפסים</div>'
                 '<span class="lx-muted">לחצו על שורה כדי לפתוח את הטופס · <span class="lx-legend"></span>'
                 'דורש בדיקה</span>', unsafe_allow_html=True)
     event = st.dataframe(view.style.apply(colour, axis=1), hide_index=True, on_select="rerun",
@@ -744,8 +789,6 @@ def screen_review(senders: list) -> None:
                     approve_clicked = st.form_submit_button("אשר טופס ועבור לבא", type="primary", key="approve",
                                                             icon=":material/check:")
                     save_clicked = st.form_submit_button("שמור בלי לאשר", key="save")
-                    st.markdown('<span class="lx-muted">שדה ריק ומסומן עדיף על ערך מנוחש</span>',
-                                unsafe_allow_html=True)
 
         if approve_clicked:
             result = rs.approve(review, entered)
@@ -841,19 +884,26 @@ def screen_export() -> None:
     st.markdown('<div class="lx-fields-head" style="margin-top:20px"><strong style="font-size:18px">'
                 'תצוגה מקדימה של הקובץ</strong><span class="lx-muted"><span class="lx-legend"></span>'
                 'שדה מסומן בטופס שלא אושר</span></div>', unsafe_allow_html=True)
-    # Narrow columns so all eleven fit without scrolling (st.dataframe starts scrolled to the left edge,
-    # which would hide the first fields of a right-to-left table).
-    px = {"first_name": 70, "last_name": 72, "id_number": 96, "central_numbers": 76, "received_date": 94,
-          "sending_entity": 68, "commitment_numbers": 80, "source_file": 150, "page_numbers": 62, "form_type": 116,
-          REVIEW_STATUS_KEY: 76}
-    widths = {headers[key]: st.column_config.Column(width=w) for key, w in px.items()}
+    widths = {headers[key]: st.column_config.Column(width=w) for key, w in EXPORT_WIDTHS.items()}
     st.dataframe(view.style.apply(colour, axis=None), hide_index=True, column_config=widths)
 
 
+def open_stored(batch_id: str, form_index: int) -> None:
+    """Load a saved run into this window and open one of its forms on the review screen."""
+    loaded = record_store.load_batch(batch_id)
+    if not loaded:
+        st.session_state.notice_error = "לא ניתן לפתוח את הרשומה: היא נשמרה לפני שהמאגר שמר גם את התמונות."
+        return
+    st.session_state.reviews = loaded
+    st.session_state.batch_id = batch_id
+    st.session_state.uploader_n += 1
+    go("review", next((i for i, r in enumerate(loaded) if r.form_index == form_index), 0))
+
+
 def screen_database() -> None:
-    st.markdown('<p class="lx-kicker">מאגר · שמירה מקומית</p><h1 class="lx-h1">מאגר הרשומות</h1>'
-                '<p class="lx-lead">כל טופס שחולץ נשמר כאן – ממתין לאישור או מאושר – וזמין גם אחרי סגירת '
-                'הדפדפן. חפשו, סננו והורידו.</p>', unsafe_allow_html=True)
+    hero("מאגר · שמירה מקומית", "מאגר הרשומות",
+         "כל טופס שחולץ נשמר כאן – ממתין לאישור או מאושר – וזמין גם אחרי סגירת הדפדפן. "
+         "חפשו, סננו, פתחו רשומה לתיקון ואישור – ליד כל שדה תופיע התמונה החתוכה מטופס ההתחייבות.")
     if not config.DB_ENABLED:
         st.info("המאגר כבוי (DB_ENABLED=false).")
         return
@@ -884,18 +934,29 @@ def screen_database() -> None:
     if stored.empty:
         st.markdown('<div class="lx-empty">אין רשומות שמתאימות לחיפוש.</div>', unsafe_allow_html=True)
     else:
+        labels = {row.id: f"רשומה {row.id} · {row.first_name} {row.last_name} · {row.central_numbers} · "
+                          f"{row.source_file} עמ׳ {row.page_numbers}" for row in stored.itertuples()}
+        pick_col, open_col = st.columns([4, 1], vertical_alignment="bottom")  # RTL: the picker on the right
+        chosen = pick_col.selectbox("פתיחת רשומה לתיקון ואישור", list(labels), format_func=labels.get,
+                                    key="db_pick")
+        if open_col.button("פתח", key="db_open", type="primary", icon=":material/open_in_new:", width="stretch"):
+            row = stored.loc[stored["id"] == chosen].iloc[0]
+            open_stored(row["batch_id"], int(row["form_index"]))
+            st.rerun()
         frame, highlight = record_store.export_frame(stored)
         headers = {**ALL_HEADERS, REVIEW_STATUS_KEY: REVIEW_STATUS_HEADER}
         view = _rtl_columns(frame.rename(columns=headers))
 
         def colour(df):  # same orange rule as the review: an open flag of a form not yet approved
-            cols = list(frame.columns)
+            cols = list(df.columns)  # the view's (right-to-left) order, not `frame`'s
             out = pd.DataFrame("", index=df.index, columns=df.columns)
             for row, key in highlight:
-                out.iloc[row, cols.index(key)] = f"background-color: {FLAG_COLOR}; color: #1A1100; font-weight: 600"
+                out.iloc[row, cols.index(headers[key])] = (f"background-color: {FLAG_COLOR}; color: #1A1100; "
+                                                           "font-weight: 600")
             return out
 
-        st.dataframe(view.style.apply(colour, axis=None), hide_index=True)
+        widths = {headers[key]: st.column_config.Column(width=w) for key, w in EXPORT_WIDTHS.items()}
+        st.dataframe(view.style.apply(colour, axis=None), hide_index=True, column_config=widths)
         st.download_button("הורד את התוצאות כ-Excel", data=to_xlsx_bytes(frame, highlight),
                            file_name=f"labextract_db_{date.today():%Y-%m-%d}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -918,23 +979,23 @@ def _sidebar_css(items: list, screen: str, pos: int) -> str:
     Streamlit buttons take only a text label, so state (current, approved, number of open flags) is drawn
     with CSS on each button's key class ("st-key-<key>").
     """
-    order = list(SCREENS)
-    rules = [f'[data-testid="stSidebar"] div.st-key-nav_{screen} button {{ background: #172036; color: #E8EDF7; '
+    order = list(STEP_SCREENS)
+    rules = [f'[data-testid="stSidebar"] div.st-key-nav_{screen} button {{ background: #FBEAF2; color: #1B1A6B; '
              f'font-weight: 600; }}',
              f'[data-testid="stSidebar"] div.st-key-nav_{screen} button::before {{ background: transparent; '
-             f'border: 2px solid {APPROVED_COLOR}; box-sizing: border-box; }}']
-    if items:
-        rules += [f'[data-testid="stSidebar"] div.st-key-nav_{s} button::before {{ background: {APPROVED_COLOR}; }}'
+             f'border: 2px solid {ACCENT_COLOR}; box-sizing: border-box; }}']
+    if items and screen in STEP_SCREENS:
+        rules += [f'[data-testid="stSidebar"] div.st-key-nav_{s} button::before {{ background: {ACCENT_COLOR}; }}'
                   for s in order[:order.index(screen)]]
     for i, r in enumerate(items):
         sel = f'[data-testid="stSidebar"] div.st-key-queue_{i} button'
         issues = len(r.open_flags()) + len(r.record.split_flags) + bool(r.record.error)
         if r.approved:
-            rules.append(f'{sel}::after {{ content: "✓"; background: #0D2A27; color: {APPROVED_COLOR}; }}')
+            rules.append(f'{sel}::after {{ content: "✓"; background: #E2F4EF; color: {APPROVED_COLOR}; }}')
         elif issues:
-            rules.append(f'{sel}::after {{ content: "{issues}"; background: #2A1E05; color: #FFC15C; }}')
+            rules.append(f'{sel}::after {{ content: "{issues}"; background: #FFEBC7; color: #9A5800; }}')
         if screen == "review" and i == pos:
-            rules.append(f'{sel} {{ background: #172036; color: #E8EDF7; box-shadow: inset 0 0 0 1px #2A3654; }}')
+            rules.append(f'{sel} {{ background: #FBEAF2; color: #1B1A6B; box-shadow: inset 0 0 0 1px #E9A6C6; }}')
     return "<style>" + "\n".join(rules) + "</style>"
 
 
@@ -959,7 +1020,7 @@ def sidebar(has_results: bool) -> None:
             st.button(f"{i + 1} {r.record.metadata.get('form_type', '') or 'לא מזוהה'}", key=f"queue_{i}",
                       type="tertiary", on_click=go, args=("review", i), width="stretch")
         st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
-        if st.button("נקה הכל", help="מוחק את כל התוצאות מהזיכרון", key="clear_all", icon=":material/delete:",
+        if st.button("נקה הכל", help="מנקה את המסך. הרשומות נשארות שמורות במאגר", key="clear_all", icon=":material/delete:",
                      width="stretch"):
             clear_all()
             st.rerun()
@@ -972,7 +1033,7 @@ def main() -> None:
         st.error(DEV_CACHE_BANNER, icon="⚠️")
 
     has_results = bool(reviews())
-    if not has_results and st.session_state.screen != "database":
+    if not has_results and st.session_state.screen not in ("upload", "database"):
         st.session_state.screen = "upload"
     sidebar(has_results)
 
@@ -996,6 +1057,7 @@ def main() -> None:
         screen_export()
     else:
         screen_upload()
+    st.markdown(PARTNER_HTML, unsafe_allow_html=True)  # page footer on every screen
 
 
 main()

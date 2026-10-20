@@ -86,3 +86,66 @@ def test_no_images_or_suggestions_are_stored():
     cols = {r[1] for r in conn.execute("PRAGMA table_info(forms)")}
     conn.close()
     assert not any(w in c for c in cols for w in ("image", "crop", "suggest", "note"))
+
+
+def _jpeg(colour="white"):
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (30, 20), colour).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def test_saved_batch_reopens_with_crops_page_previews_and_edits():
+    from src.field_crops import PagePreview, SourceCrop
+
+    review = _review(1, flags={"last_name": "name_unverified"}, last_name="")
+    review.record.suggestions["last_name"] = "ישראלי"
+    review.record.field_crops["central_numbers"] = [SourceCrop(1, (1, 2, 3, 4), _jpeg("red")),
+                                                    SourceCrop(2, (5, 6, 7, 8), _jpeg("blue"))]
+    review.record.page_images.extend([PagePreview(7, _jpeg()), PagePreview(8, _jpeg("gray"))])
+    store.save_review(review, "b1")
+    review.edits["last_name"] = "ישראלי"
+    store.save_review(review, "b1")  # an update keeps the images written on insert
+
+    loaded = store.load_batch("b1")
+    assert len(loaded) == 1
+    again = loaded[0]
+    assert again.value("last_name") == "ישראלי" and again.record.flags == {"last_name": "name_unverified"}
+    assert again.record.suggestions == {"last_name": "ישראלי"}
+    crops = again.record.field_crops["central_numbers"]
+    assert [c.page for c in crops] == [1, 2] and crops[1].box == (5, 6, 7, 8)
+    assert crops[0].jpeg == review.record.field_crops["central_numbers"][0].jpeg
+    assert [p.page_number for p in again.record.page_images] == [7, 8]
+
+
+def test_delete_removes_the_images_too():
+    from src import config
+    from src.field_crops import SourceCrop
+
+    review = _review(1)
+    review.record.field_crops["id_number"] = [SourceCrop(1, (1, 2, 3, 4), _jpeg())]
+    store.save_review(review, "b1")
+    store.delete(list(store.search()["id"]))
+    with store._connect(config.DB_PATH) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 0
+
+
+def test_database_from_before_the_images_is_upgraded_in_place():
+    import sqlite3
+
+    from src import config
+
+    config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    old = sqlite3.connect(config.DB_PATH)
+    old.execute("CREATE TABLE forms (id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL, "
+                "form_index INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', open_flags TEXT NOT NULL "
+                "DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, approved_at TEXT, "
+                + ", ".join(f"{c} TEXT NOT NULL DEFAULT ''" for c in store._COLUMNS)
+                + ", UNIQUE (batch_id, form_index))")
+    old.commit()
+    old.close()
+    store.save_review(_review(1), "b1")
+    assert store.counts()["total"] == 1 and len(store.load_batch("b1")) == 1
