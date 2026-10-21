@@ -155,6 +155,9 @@ def next_unapproved(reviews: list, after: int) -> Optional[int]:
     return None
 
 
+FORM_INDEX_KEY = "form_index"
+
+
 def summary_frame(reviews: list) -> pd.DataFrame:
     """One row per form for the summary screen (English keys; the app sets Hebrew headers)."""
     rows = []
@@ -173,18 +176,23 @@ def summary_frame(reviews: list) -> pd.DataFrame:
                                        "form_warnings", REVIEW_STATUS_KEY])
 
 
-def export_frame(reviews: list) -> tuple:
+def export_frame(reviews: list, with_form_index: bool = False) -> tuple:
     """(DataFrame, highlight) for the export: one row per commitment, fields + metadata + review status.
+
+    with_form_index adds a `form_index` column (position of the form in `reviews`) so a screen can open the
+    form behind a row; the export itself never has it.
 
     highlight is a set of (row position, column key) cells to fill orange: flagged fields of forms that
     are not approved. Suggestions, crops and images are never part of the export.
     """
-    columns = [*FIELD_KEYS, *METADATA_KEYS, REVIEW_STATUS_KEY]
+    columns = [*FIELD_KEYS, *METADATA_KEYS, REVIEW_STATUS_KEY, *([FORM_INDEX_KEY] if with_form_index else [])]
     rows, highlight = [], set()
     for pos, r in enumerate(reviews):
         row = {key: r.value(key) for key in FIELD_KEYS}
         row.update({key: r.record.metadata.get(key, "") for key in METADATA_KEYS})
         row[REVIEW_STATUS_KEY] = REVIEW_STATUS_APPROVED if r.approved else REVIEW_STATUS_PENDING
+        if with_form_index:
+            row[FORM_INDEX_KEY] = pos
         rows.append(row)
         highlight |= {(pos, key) for key in r.open_flags()}
         if not r.approved:

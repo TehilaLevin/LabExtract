@@ -597,33 +597,34 @@ def screen_summary() -> None:
     <div class="lx-bar"><div style="width:{share}%"></div></div></div>
 </div>""", unsafe_allow_html=True)
 
-    df.insert(0, "position", range(1, len(df) + 1))
-    headers = {"position": "#", "source_file": ALL_HEADERS["source_file"], "page_numbers": ALL_HEADERS["page_numbers"],
-               "form_type": ALL_HEADERS["form_type"], "flagged_fields": "שדות לבדיקה",
-               "form_warnings": "אזהרות טופס", REVIEW_STATUS_KEY: REVIEW_STATUS_HEADER}
-    view = _rtl_columns(df.drop(columns=["form_index"]).rename(columns=headers))
+    # One row per commitment with every field (the lab's record), orange on flagged fields of forms not yet
+    # approved. A form with several commitment numbers repeats on several rows; a click opens its form.
+    rows, highlight = rs.export_frame(items, with_form_index=True)
+    form_of_row = rows.pop(rs.FORM_INDEX_KEY).tolist()
+    rows.insert(0, "position", [pos + 1 for pos in form_of_row])
+    headers = {**ALL_HEADERS, REVIEW_STATUS_KEY: REVIEW_STATUS_HEADER, "position": "טופס"}
+    view = _rtl_columns(rows.rename(columns=headers))
 
-    def colour(row):
-        done = row[REVIEW_STATUS_HEADER] == REVIEW_STATUS_APPROVED
-        out = []
-        for col in row.index:
-            hot = not done and ((col in ("שדות לבדיקה", "אזהרות טופס") and row[col] > 0)
-                                or col == REVIEW_STATUS_HEADER)
-            if hot:  # dark text on orange: readable on the dark theme
-                out.append(f"background-color: {FLAG_COLOR}; color: #1A1100; font-weight: 600")
-            elif done and col == REVIEW_STATUS_HEADER:
-                out.append(f"color: {APPROVED_COLOR}; font-weight: 600")
-            else:
-                out.append("")
-        return out
+    def colour(frame: pd.DataFrame) -> pd.DataFrame:
+        styles = pd.DataFrame("", index=frame.index, columns=frame.columns)
+        status = frame.columns.get_loc(REVIEW_STATUS_HEADER)
+        for pos in range(len(frame)):
+            if frame.iat[pos, status] == REVIEW_STATUS_APPROVED:
+                styles.iat[pos, status] = f"color: {APPROVED_COLOR}; font-weight: 600"
+        for pos, key in highlight:  # dark text on orange: readable on the dark theme
+            styles.iloc[pos, frame.columns.get_loc(headers[key])] = (f"background-color: {FLAG_COLOR}; "
+                                                                      "color: #1A1100; font-weight: 600")
+        return styles
 
-    st.markdown('<div class="lx-section" style="font-size:18px;font-weight:600;color:#1B1A6B">כל הטפסים</div>'
-                '<span class="lx-muted">לחצו על שורה כדי לפתוח את הטופס · <span class="lx-legend"></span>'
-                'דורש בדיקה</span>', unsafe_allow_html=True)
-    event = st.dataframe(view.style.apply(colour, axis=1), hide_index=True, on_select="rerun",
-                         selection_mode="single-row", key=f"summary_{st.session_state.nonce}")
+    st.markdown('<div class="lx-section" style="font-size:18px;font-weight:600;color:#1B1A6B">כל הרשומות</div>'
+                f'<span class="lx-muted">{len(rows)} רשומות (שורה לכל מספר התחייבות) · לחצו על שורה כדי לפתוח '
+                'את הטופס · <span class="lx-legend"></span>דורש בדיקה</span>', unsafe_allow_html=True)
+    widths = {headers[key]: st.column_config.Column(width=w) for key, w in EXPORT_WIDTHS.items()}
+    event = st.dataframe(view.style.apply(colour, axis=None), hide_index=True, on_select="rerun",
+                         selection_mode="single-row", column_config=widths,
+                         key=f"summary_{st.session_state.nonce}")
     if event.selection.rows:
-        go("review", event.selection.rows[0])
+        go("review", form_of_row[event.selection.rows[0]])
         st.rerun()
 
 

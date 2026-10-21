@@ -189,3 +189,10 @@ def test_export_cells_after_split_are_text_with_leading_zeros():
     assert ws.max_row == 3                                  # header + 2 commitments
     cells = {c.value for row in ws.iter_rows(min_row=2) for c in row}
     assert {"001122334", "007", "008"} <= cells
+
+
+def test_export_frame_form_index_follows_every_commitment_row():
+    reviews = rs.new_session([_record(1, commitment_numbers="111, 222"), _record(2)])
+    df, _ = rs.export_frame(reviews, with_form_index=True)
+    assert list(df[rs.FORM_INDEX_KEY]) == [0, 0, 1]
+    assert rs.FORM_INDEX_KEY not in rs.export_frame(reviews)[0].columns
