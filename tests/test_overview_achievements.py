@@ -27,6 +27,15 @@ def test_breakdown_counts_percentages_and_kinds():
     assert sum(r["percent"] for r in rows) == 100.0
 
 
+def test_breakdown_sorting_ties_missing_names_and_denominator():
+    rows = overview.breakdown({"מכבי": 2, "כללית": 2, "איכילוב": 5, None: 1, "  ": 1})
+    assert [r["count"] for r in rows] == sorted((r["count"] for r in rows), reverse=True)
+    assert [r["name"] for r in rows[:4]] == ["איכילוב", "כללית", overview.UNKNOWN_NAME, "מכבי"]  # ties broken by name
+    unknown = next(r for r in rows if r["kind"] == overview.KIND_UNKNOWN)
+    assert unknown["name"] == overview.UNKNOWN_NAME and unknown["count"] == 2    # None and blank merge
+    assert all(r["percent"] == round(100 * r["count"] / 11, 1) for r in rows)    # denominator = all forms
+
+
 def test_breakdown_empty_and_totals_by_kind():
     assert overview.breakdown({}) == []
     totals = overview.totals_by_kind(overview.breakdown({"מכבי": 1, "כללית": 1, "איכילוב": 2}))
