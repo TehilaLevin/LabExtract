@@ -56,8 +56,9 @@ class Record:
     metadata: dict               # source_file, page_numbers, form_type (display text)
     split_flags: list = field(default_factory=list)
     error: Optional[str] = None
-    # Unverified readings of handwritten names (field -> text). NEVER approved values:
-    # values[field] stays "" and the field stays flagged; shown only as an orange suggestion.
+    # Unverified readings (field -> text): handwritten names, and the single number candidate that passed
+    # validation (field_reread.CANDIDATE_FIELDS). NEVER approved values: values[field] stays "" and the
+    # field stays flagged; shown only as an orange suggestion.
     suggestions: dict = field(default_factory=dict)
     # field key -> [field_crops.SourceCrop]: where each value was read from, in memory only (never exported
     # or logged), for the review UI. Fields the model did not locate are absent.
@@ -186,10 +187,11 @@ def build_record(form, extraction, name_check=None, threshold: float = config.CO
     field_crops / page_images are field_crops.source_crops() / page_previews() for this form.
     """
     today = today or date.today()
-    overrides, alternatives, outcomes = {}, {}, {}
+    overrides, alternatives, outcomes, suggestions = {}, {}, {}, {}
     effective = extraction
     if recheck is not None and not extraction.error:
-        effective, overrides, alternatives, outcomes = apply_field_recheck(extraction, recheck, threshold, today)
+        effective, overrides, alternatives, outcomes, suggestions = apply_field_recheck(
+            extraction, recheck, threshold, today)
 
     values, flags = field_flags(effective, threshold, today)
     for key, reason in overrides.items():
@@ -199,10 +201,9 @@ def build_record(form, extraction, name_check=None, threshold: float = config.CO
             flags[key] = reason
     confidences = {key: extraction.fields[key].confidence for key in FIELD_KEYS}
 
-    suggestions = {}
     if not extraction.error:
         _drop_commitments_equal_to_id(values, flags, effective)
-        suggestions = _apply_name_check(values, flags, extraction, name_check, threshold)
+        suggestions.update(_apply_name_check(values, flags, extraction, name_check, threshold))
 
     sender = values.get("sending_entity") or None
     metadata = {
@@ -259,6 +260,8 @@ def apply_batch_id_consistency(records: list) -> int:
 # - Both pass validation but differ: the field is emptied and flagged "reread_conflict".
 # - Otherwise the full-page value stays, flagged "reread_conflict" when either reading passes
 #   validation. A failed second pass never overwrites a better-supported value.
+# - The crop was unreadable but listed candidate readings: only candidates passing validation are kept
+#   (_decide_candidates); one for an empty field becomes a suggestion, more are alternatives. Still flagged.
 # Every other reading is kept in Record.alternatives (memory only) for the reviewer. Every changed
 # field stays flagged: model confidence is a heuristic, not a probability of being right.
 
@@ -283,6 +286,8 @@ def _decide(key: str, orig, target, extraction, threshold: float, today: date) -
     from src.field_reread import comparable
 
     o_raw = normalize_number_list(orig.value) if key in LIST_FIELDS else orig.value
+    if target.status == "unreadable" and target.candidates:
+        return _decide_candidates(key, o_raw, target, extraction, today)
     if target.status != "read":
         if target.status == "unreadable" and not o_raw:
             return "unreadable", None, "unreadable", []
@@ -321,13 +326,38 @@ def _decide(key: str, orig, target, extraction, threshold: float, today: date) -
     return "mismatch", None, ("reread_conflict" if o_ok or t_ok else _KEEP), [t_text]
 
 
+def _candidate_ok(key: str, candidate: str, extraction, today: date) -> bool:
+    value = [candidate] if key in LIST_FIELDS else candidate
+    if _validate(key, value, None, today)[1] is not None:
+        return False
+    return not (key == "id_number" and _id_key(candidate) in _other_numbers(extraction))
+
+
+def _decide_candidates(key: str, o_raw, target, extraction, today: date) -> tuple:
+    """The crop was unreadable but came with candidate readings. Only candidates that pass validation are
+    kept (for the ID: the check digit). A single valid candidate for an empty field becomes the suggestion
+    (outcome "suggested"); several are shown as alternatives. The field stays flagged either way - a
+    candidate is never an approved value."""
+    valid = [c for c in target.candidates if _candidate_ok(key, c, extraction, today)]
+    if o_raw:
+        shown = _as_text(key, o_raw)
+        others = [c for c in valid if c != shown]
+        return ("candidates" if others else "unreadable"), None, _KEEP, others
+    if len(valid) == 1:
+        return "suggested", None, "unreadable", valid
+    if valid:
+        return "candidates", None, "unreadable", valid
+    return "unreadable", None, "unreadable", []
+
+
 def apply_field_recheck(extraction, recheck, threshold: float = config.CONFIDENCE_THRESHOLD,
                         today: Optional[date] = None) -> tuple:
     """Apply a targeted re-read. Returns (effective extraction, flag overrides {field: reason or None},
-    alternatives {field: [other readings]}, outcomes {field: code}). Never mutates `extraction`."""
+    alternatives {field: [other readings]}, outcomes {field: code}, suggestions {field: candidate}).
+    Never mutates `extraction`."""
     today = today or date.today()
     fields = dict(extraction.fields)
-    overrides, alternatives, outcomes = {}, {}, {}
+    overrides, alternatives, outcomes, suggestions = {}, {}, {}, {}
     for key in recheck.attempted:
         outcome, replacement, override, alts = _decide(
             key, extraction.fields[key], recheck.result(key), extraction, threshold, today)
@@ -336,9 +366,11 @@ def apply_field_recheck(extraction, recheck, threshold: float = config.CONFIDENC
             fields[key] = replacement
         if override is not _KEEP:
             overrides[key] = override
-        if alts:
+        if outcome == "suggested":
+            suggestions[key] = alts[0]
+        elif alts:
             alternatives[key] = alts
-    return dataclasses.replace(extraction, fields=fields), overrides, alternatives, outcomes
+    return dataclasses.replace(extraction, fields=fields), overrides, alternatives, outcomes, suggestions
 
 
 # ------------------------------------------------------------------ safe diagnostics
@@ -414,6 +446,12 @@ def _drop_commitments_equal_to_id(values: dict, flags: dict, extraction) -> None
 # ------------------------------------------------------------------ name safeguards
 
 NAME_KEYS = ("first_name", "last_name")
+# The model always gives its best reading of a name crop (uncertain letters included). A name the full page
+# did not read is approved from the crops alone only at this confidence, with no uncertain letter, and with
+# a first / last split taken from labeled fields or a known form convention; anything less stays an
+# unverified suggestion for the reviewer.
+NAME_AUTO_APPROVE_CONFIDENCE = 0.9
+NAME_APPROVE_ASSIGNMENTS = frozenset({"labeled_fields", "convention"})
 _NAME_CLEAN_RE = re.compile(r"[\"'`׳״.,:;()\-]")
 
 
@@ -446,12 +484,38 @@ def _suggestion(reading, extraction) -> dict:
     return {k: extraction.fields[k].value for k in NAME_KEYS if extraction.fields[k].value}
 
 
+def _split_names(reading) -> tuple:
+    return tuple(_name_tokens(n) for n in (reading.first_name, reading.last_name))
+
+
+def _crops_approve(readings: list) -> bool:
+    """The crop readings alone are strong enough to approve a name the full page did not read: every crop
+    is legible, split into first + last name, no letter in doubt, confidence >= NAME_AUTO_APPROVE_CONFIDENCE,
+    and all crops agree on both names (same words AND same first / last assignment)."""
+    if not readings:
+        return False
+    for r in readings:
+        if not (r.legible and r.first_name and r.last_name and r.uncertain_letters == 0
+                and r.confidence >= NAME_AUTO_APPROVE_CONFIDENCE and r.assignment in NAME_APPROVE_ASSIGNMENTS):
+            return False
+    return len({_split_names(r) for r in readings}) == 1
+
+
+def _approve_from_crops(values: dict, flags: dict, readings: list) -> dict:
+    best = _best_reading(readings)
+    values["first_name"], values["last_name"] = best.first_name, best.last_name
+    for k in NAME_KEYS:
+        flags.pop(k, None)
+    return {}
+
+
 def _apply_name_check(values: dict, flags: dict, extraction, name_check, threshold: float) -> dict:
     """Safeguards for handwritten (or unknown-script) names. Mutates values / flags and
     returns suggestions {field: text} for names that could not be verified.
 
     A name is approved only when the full-page reading and EVERY crop reading agree and are
-    confident. Otherwise both names are emptied, flagged, and the best available reading
+    confident (any uncertain letter => low_confidence), or - when the full page read no name - when
+    the crop readings alone pass _crops_approve. Otherwise both names are emptied, flagged, and the best available reading
     (crop first) is returned as an unverified suggestion:
     - "name_unverified": verification failed, or a crop is illegible, or no page reading.
     - "name_conflict":   crops of different name locations disagree.
@@ -471,6 +535,8 @@ def _apply_name_check(values: dict, flags: dict, extraction, name_check, thresho
         return _suggestion(best, extraction)
 
     page_key = _name_tokens(extraction.fields["first_name"].value, extraction.fields["last_name"].value)
+    if not page_key and not name_check.error and _crops_approve(readings):
+        return _approve_from_crops(values, flags, readings)
     if name_check.error or not readings or not page_key:
         return unverified("name_unverified")
     if not all(r.legible and _reading_tokens(r) for r in readings):
@@ -487,7 +553,7 @@ def _apply_name_check(values: dict, flags: dict, extraction, name_check, thresho
             return unverified("name_order_unclear")
     present = [k for k in NAME_KEYS if values.get(k)]
     lowest = min([extraction.fields[k].confidence for k in present] + [r.confidence for r in readings])
-    if lowest < threshold:
+    if lowest < threshold or any(r.uncertain_letters for r in readings):
         for k in present:
             if flags.get(k) in (None, "name_order_unclear"):
                 flags[k] = "low_confidence"

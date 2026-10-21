@@ -99,7 +99,7 @@ measured on the samples may not carry over.
    | Field values, metadata, status, reason codes of open flags, the reviewer's edits | always | manual delete only |
    | Field crops (JPEG, quality 85, long side up to 1200 px, a few tens to ~200 KB each) | yes, so a crop sits next to every field, also after approval and when a saved form is reopened | with the record |
    | Page previews (JPEG, quality 85, up to 1600 px, a few hundred KB per page) | only while the form is **not approved** | **deleted when the form is approved** |
-   | Suggestions (plain-text readings of handwritten names, **unverified personal data**), alternatives, notes | only while the form is not approved | **stripped from the record when the form is approved** |
+   | Suggestions (plain-text readings of handwritten names and number candidates, **unverified personal data**), alternatives, notes | only while the form is not approved | **stripped from the record when the form is approved** |
    | Raw model readings (`raw_texts`) | **never** | – |
    | The uploaded files | **never** | – |
 
@@ -129,6 +129,12 @@ typing does not rerun the script; saved values are kept in `src/review_session.p
 - Handwritten Hebrew cursive names are often misread. Safeguards: each name area is cropped and re-read at high
   resolution, and all readings of every place the name appears must agree. Otherwise the name field is left empty and
   flagged, and the best reading is shown only as an orange "suggestion – unverified" (never an approved value).
+  The crop pass always returns its best reading with a count of uncertain letters; when the full page read no
+  name, the crops alone approve it only if every crop agrees, no letter is uncertain, confidence >= 0.9 and the
+  first / last split comes from labels or a known form convention (`NAME_AUTO_APPROVE_CONFIDENCE`).
+- Unreadable numbers: the targeted re-read lists candidate readings (one per way of reading an unclear digit).
+  Code keeps only candidates that pass validation (ID check digit, 6-digit central number); a single one is shown as
+  a suggestion, several as alternatives. The field stays empty and flagged until the reviewer confirms.
 - Claude declines to read Hebrew cursive often: such fields stay empty and flagged (never guessed). On the 15
   draft-labelled forms Opus 5.5 with thinking (no crops) got 69/105 fields right with 0 silent errors; names were
   the weak field (1/15).

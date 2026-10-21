@@ -552,9 +552,57 @@ def test_reversed_labeled_fields_are_flagged():
 def test_no_page_reading_but_crop_gives_suggestion():
     ext = _hand(first=None, last=None, conf=0.3)
     assert ee.needs_name_check(ext) is True  # a name location exists
-    rec = _rec(ext, _check(_reading("ישראל ישראלי", first="ישראל", last="ישראלי", assignment="convention")))
+    rec = _rec(ext, _check(_reading("ישראל ישראלי", first="ישראל", last="ישראלי", assignment="convention",
+                                    conf=0.85)))
     assert rec.flags["first_name"] == "name_unverified" and rec.values["first_name"] == ""
     assert rec.suggestions["first_name"] == "ישראל"
+
+
+def _crop(first="ישראל", last="ישראלי", conf=0.95, uncertain=0, assignment="labeled_fields", kind="labeled_fields"):
+    return ee.NameReading(kind, True, f"{first} {last}", assignment, first, last, conf, uncertain)
+
+
+def test_no_page_reading_confident_crops_are_approved():
+    rec = _rec(_hand(first=None, last=None, conf=0.3), _check(_crop(), _crop(kind="other", assignment="convention")))
+    assert rec.values["first_name"] == "ישראל" and rec.values["last_name"] == "ישראלי"
+    assert "first_name" not in rec.flags and "last_name" not in rec.flags and rec.suggestions == {}
+
+
+@pytest.mark.parametrize("crops", [
+    [_crop(conf=0.89)],                                     # below NAME_AUTO_APPROVE_CONFIDENCE
+    [_crop(uncertain=1)],                                   # a letter in doubt
+    [_crop(assignment="unclear")],                          # first / last split not known
+    [_crop(), _crop(first="ישראלי", last="ישראל")],         # crops disagree on the order
+    [_crop(), _crop(last="ישראלית")],                       # crops disagree on a letter
+    [_crop(), ee.NameReading("other", False, None, "unclear", None, None, 0.2)],  # one crop illegible
+])
+def test_no_page_reading_weak_crops_stay_suggestions(crops):
+    rec = _rec(_hand(first=None, last=None, conf=0.3), _check(*crops))
+    assert rec.values["first_name"] == rec.values["last_name"] == ""
+    assert rec.flags["first_name"] == rec.flags["last_name"] == "name_unverified"
+    assert rec.suggestions["first_name"]
+
+
+def test_uncertain_letter_flags_an_agreed_name():
+    rec = _rec(_hand(conf=0.95), _check(_crop(uncertain=1)))
+    assert rec.values["first_name"] == "ישראל"
+    assert rec.flags == {"first_name": "low_confidence", "last_name": "low_confidence"}
+
+
+def test_name_check_parses_uncertain_letters(monkeypatch):
+    from PIL import Image
+
+    answer = {"crops": [{"crop_index": 1, "legible": True, "full_name": "ישראל ישראלי", "assignment": "labeled_fields",
+                         "first_name": "ישראל", "last_name": "ישראלי", "uncertain_letters": 2, "confidence": 0.7},
+                        {"crop_index": 2, "legible": True, "full_name": "ישראל ישראלי", "assignment": "labeled_fields",
+                         "first_name": "ישראל", "last_name": "ישראלי", "confidence": 0.95}]}
+    monkeypatch.setattr(ee, "generate_json", lambda *a, **k: answer)
+    ext = _hand(locations=[{"page": 1, "box_2d": [300, 100, 340, 900], "kind": "labeled_fields"},
+                           {"page": 1, "box_2d": [500, 100, 540, 900], "kind": "other"}])
+    check = ee.verify_names([Image.new("RGB", (1000, 1400), "white")], ext)
+    assert [r.uncertain_letters for r in check.readings] == [2, 1]  # missing count => uncertain
+    assert "uncertain_letters" in ee.NAME_CHECK_SCHEMA["properties"]["crops"]["items"]["required"]
+    assert "ALWAYS give your best reading" in ee.NAME_CHECK_PROMPT
 
 
 def test_unsplit_crop_reading_is_shown_whole():

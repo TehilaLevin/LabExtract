@@ -373,6 +373,17 @@ def _confidence(value) -> float:
     return max(0.0, min(1.0, c)) if c == c else 0.0  # NaN -> 0
 
 
+def _count(value) -> int:
+    """A non-negative count from the model; missing or malformed => 1 (unknown counts as uncertain)."""
+    if isinstance(value, bool):
+        return 1
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(0, n)
+
+
 def _clean_scalar(value) -> Optional[str]:
     if value is None:
         return None
@@ -519,8 +530,9 @@ def extract_form(images: list, sender_names: Optional[list] = None, crop_images:
 # ------------------------------------------------------------ name verification
 # Handwritten names are the riskiest field: the model can turn unclear cursive into a
 # plausible, confident, wrong name. Each name location is cropped from the full-resolution
-# page and re-read at high resolution in a separate request; record_builder compares the
-# readings with the full-page reading and flags (or empties) the names when they differ.
+# page and re-read at high resolution in a separate request. The crop pass always returns its best
+# reading (with a count of uncertain letters), so the reviewer gets a suggestion instead of an empty field;
+# record_builder decides what is approved and flags (or empties) the names when the readings differ.
 
 # How a crop reading assigned first / last name.
 NAME_ASSIGNMENTS = ("labeled_fields", "convention", "unclear")
@@ -535,9 +547,12 @@ For EACH crop, independently:
   In Hebrew a value is written to the LEFT of its label: each value belongs to the label immediately to its RIGHT.
   If the name is in one field / sticker line, split it by the KNOWN NAME ORDERS below: assignment = "convention";
   if that layout is not listed, split with the family name first and set assignment = "unclear".
-- Read letter by letter. Hebrew cursive letter shapes differ from print. If you would have to guess ANY letter, set
-  legible = false and full_name / first_name / last_name = null. Never output a plausible-looking name you cannot see.
-- confidence: 0-1, how sure you are of every letter.
+- Read letter by letter. Hebrew cursive letter shapes differ from print. ALWAYS give your best reading of the letters
+  you see, even when some letters are unclear: a person reviews every uncertain reading, so a best reading helps and
+  an empty answer does not. Never replace what is written with a common or plausible name - transcribe the strokes.
+- legible = false only when the crop shows no name at all (empty, cut off entirely, covered); then the names are null.
+- uncertain_letters: how many letters of the name you are NOT sure about (0 = every letter is clear).
+- confidence: 0-1, how sure you are of every letter (any uncertain letter => below 0.8).
 Ignore yellow highlighter. Do not output anything except the JSON.
 
 Form type reported by the full-page pass: {form_type}
@@ -558,12 +573,13 @@ NAME_CHECK_SCHEMA = {
                     "assignment": {"type": "STRING", "enum": list(NAME_ASSIGNMENTS)},
                     "first_name": {"type": "STRING", "nullable": True},
                     "last_name": {"type": "STRING", "nullable": True},
+                    "uncertain_letters": {"type": "INTEGER"},
                     "confidence": {"type": "NUMBER"},
                 },
                 "required": ["crop_index", "legible", "full_name", "assignment", "first_name", "last_name",
-                             "confidence"],
+                             "uncertain_letters", "confidence"],
                 "propertyOrdering": ["crop_index", "legible", "full_name", "assignment", "first_name",
-                                     "last_name", "confidence"],
+                                     "last_name", "uncertain_letters", "confidence"],
             },
         }
     },
@@ -586,6 +602,7 @@ class NameReading:
     first_name: Optional[str]
     last_name: Optional[str]
     confidence: float
+    uncertain_letters: int = 0      # letters the model was not sure about; unknown counts as uncertain
 
 
 @dataclass
@@ -668,6 +685,7 @@ def verify_names(images: list, extraction: ExtractionResult) -> NameCheck:
             first_name=_clean_scalar(c.get("first_name")) if legible else None,
             last_name=_clean_scalar(c.get("last_name")) if legible else None,
             confidence=_confidence(c.get("confidence")),
+            uncertain_letters=_count(c.get("uncertain_letters")),
         ))
     logger.info("Verified names from %d crop(s); legible=%s", len(readings), [r.legible for r in readings])
     return NameCheck(needed=True, readings=readings)

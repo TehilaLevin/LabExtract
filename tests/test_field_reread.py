@@ -534,3 +534,75 @@ def test_quota_during_reread_keeps_the_extraction(monkeypatch, tmp_path):
     assert rec.error is None and rec.values["sending_entity"] == "מכבי"
     assert rec.values["id_number"] == INVALID_ID and rec.flags["id_number"] == "invalid_id"
     assert rec.diagnostics["reread_error"] is True
+
+
+# ---- candidate readings of unreadable numbers ------------------------------------------------
+
+def _unreadable(key, candidates):
+    return fr.CropReading(key, "unreadable", [], 0.4, candidates=list(candidates))
+
+
+def test_combine_keeps_candidates_of_unreadable_crops_only():
+    target = fr.combine_readings("id_number", [_unreadable("id_number", [VALID_ID, INVALID_ID]),
+                                               _unreadable("id_number", [VALID_ID, OTHER_VALID_ID])])
+    assert target.status == "unreadable" and target.candidates == [VALID_ID, INVALID_ID, OTHER_VALID_ID]
+    assert fr.combine_readings("id_number", [_reading("id_number", [], status="not_in_crop")]).candidates == []
+
+
+def test_single_valid_id_candidate_is_a_suggestion_never_a_value():
+    ext = _ext(id_number={"value": None, "confidence": 0.3, "status": "unreadable"})
+    rec = _rec(ext, _recheck(_unreadable("id_number", [INVALID_ID, VALID_ID])))   # check digit leaves one
+    assert rec.values["id_number"] == "" and rec.flags["id_number"] == "unreadable"
+    assert rec.suggestions == {"id_number": VALID_ID} and "id_number" not in rec.alternatives
+    assert rec.diagnostics["fields"]["id_number"]["reread"] == "suggested"
+
+
+def test_several_valid_candidates_are_alternatives():
+    ext = _ext(id_number={"value": None, "confidence": 0.3, "status": "unreadable"})
+    rec = _rec(ext, _recheck(_unreadable("id_number", [VALID_ID, OTHER_VALID_ID])))
+    assert rec.values["id_number"] == "" and rec.suggestions == {}
+    assert rec.alternatives["id_number"] == [VALID_ID, OTHER_VALID_ID]
+
+
+def test_invalid_candidates_are_dropped():
+    ext = _ext(id_number={"value": None, "confidence": 0.3, "status": "unreadable"},
+               central_numbers={"value": [], "confidence": 0.1, "status": "unreadable"})
+    rec = _rec(ext, _recheck(_unreadable("id_number", [INVALID_ID]),
+                             _unreadable("central_numbers", ["93927", "1234567"])))   # not 6 digits
+    assert rec.suggestions == {} and rec.alternatives == {}
+    assert rec.flags["id_number"] == rec.flags["central_numbers"] == "unreadable"
+
+
+def test_id_candidate_equal_to_another_number_is_dropped():
+    ext = _ext(id_number={"value": None, "confidence": 0.3, "status": "unreadable"},
+               commitment_numbers={"value": [VALID_ID.lstrip("0")], "confidence": 0.95})
+    rec = _rec(ext, _recheck(_unreadable("id_number", [VALID_ID])))
+    assert "id_number" not in rec.suggestions
+
+
+def test_candidates_next_to_a_page_value_are_alternatives():
+    ext = _ext(central_numbers={"value": ["939973"], "confidence": 0.6})
+    rec = _rec(ext, _recheck(_unreadable("central_numbers", ["939973", "939273"])))
+    assert rec.values["central_numbers"] == "939973" and rec.flags["central_numbers"] == "low_confidence"
+    assert rec.alternatives["central_numbers"] == ["939273"] and rec.suggestions == {}
+
+
+def test_reread_parses_candidates_for_number_fields_only(monkeypatch):
+    def fake_generate(contents, schema, **kwargs):
+        return {"crops": [{"crop_index": 1, "status": "unreadable", "values": [], "confidence": 0.4,
+                           "candidates": ["0000 00018", VALID_ID, "a", "b", "c"], "received_date_source": "none"},
+                          {"crop_index": 2, "status": "unreadable", "values": [], "confidence": 0.4,
+                           "candidates": ["16/06/2026"], "received_date_source": "none"},
+                          {"crop_index": 3, "status": "read", "values": [VALID_ID], "confidence": 0.9,
+                           "candidates": [OTHER_VALID_ID], "received_date_source": "none"}]}
+
+    monkeypatch.setattr(ee, "generate_json", fake_generate)
+    ext = _ext(locations=[{"field": "id_number", "page": 1, "box_2d": [100, 100, 150, 400]},
+                          {"field": "received_date", "page": 1, "box_2d": [500, 500, 600, 700]},
+                          {"field": "id_number", "page": 1, "box_2d": [700, 500, 800, 700]}])
+    recheck = fr.reread_fields([Image.new("RGB", (1000, 1400), "white")], ext, ["id_number", "received_date"])
+    by_field = [(r.field, r.candidates) for r in recheck.readings]
+    assert by_field == [("id_number", ["000000018", VALID_ID, "a", "b"]),   # spaces removed, at most 4
+                        ("received_date", []),                               # dates never get candidates
+                        ("id_number", [])]                                   # read: no candidates
+    assert "candidates" in fr.REREAD_SCHEMA["properties"]["crops"]["items"]["required"]

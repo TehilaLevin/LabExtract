@@ -36,6 +36,11 @@ MAX_BOX_AREA = 0.25         # a box over 25% of the page gains no resolution: no
 MAX_CROPS_PER_FORM = 8
 
 CROP_STATUSES = ("read", "unreadable", "not_in_crop")
+# An unreadable number may come back with candidate readings (one per way of reading its unclear digits):
+# code keeps those that pass validation and shows them to the reviewer. Dates are not included - a date
+# candidate would also need its source rule, and a wrong day is not caught by any check.
+CANDIDATE_FIELDS = frozenset({"id_number", "central_numbers", "commitment_numbers"})
+MAX_CANDIDATES = 4
 
 FIELD_DESCRIPTIONS = {
     "id_number": 'the PATIENT\'s Israeli ID number (labels "ת.ז.", "ת\\"ז", "מספר זהות", "מ.ז.", "ID / PASS"). '
@@ -59,7 +64,11 @@ For each crop:
 - status = "read": the requested field is visible and EVERY character is legible. values = the value(s) exactly as
   written, digits (and letters, if printed so) without spaces. Dates: copy as written, e.g. "18-06-2026", "16/6/26".
 - status = "unreadable": the field is in the crop but at least one character is unclear, covered or cut off.
-  values = []. Never complete or guess a digit - an unreadable field is reviewed by a person, a guessed one is not.
+  values = []. Never present a guessed digit as read - an unreadable field is reviewed by a person.
+- candidates: only when status = "unreadable" and you can see every character position: up to {max_candidates}
+  complete readings of the value, most likely first - one per way of reading the unclear characters (e.g. a digit
+  that is either 2 or 9 => two candidates). [] when a character is missing or cut off, and for every other status.
+  Candidates are checked by code (e.g. the ID check digit) and shown to a person; they are never approved as read.
 - status = "not_in_crop": the crop does not show the requested field (another number, an empty area). values = [].
 - confidence: 0-1, how sure you are of every character.
 - received_date_source: only for received_date (see below); "none" for every other field.
@@ -79,11 +88,13 @@ REREAD_SCHEMA = {
                     "crop_index": {"type": "INTEGER"},
                     "status": {"type": "STRING", "enum": list(CROP_STATUSES)},
                     "values": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "candidates": {"type": "ARRAY", "items": {"type": "STRING"}},
                     "confidence": {"type": "NUMBER"},
                     "received_date_source": {"type": "STRING", "enum": list(RECEIVED_DATE_SOURCES)},
                 },
-                "required": ["crop_index", "status", "values", "confidence", "received_date_source"],
-                "propertyOrdering": ["crop_index", "status", "values", "confidence", "received_date_source"],
+                "required": ["crop_index", "status", "values", "candidates", "confidence", "received_date_source"],
+                "propertyOrdering": ["crop_index", "status", "values", "candidates", "confidence",
+                                     "received_date_source"],
             },
         }
     },
@@ -98,6 +109,7 @@ class CropReading:
     values: list
     confidence: float
     source: Optional[str] = None    # received_date only
+    candidates: list = field(default_factory=list)  # status "unreadable": complete possible readings
 
 
 @dataclass
@@ -108,6 +120,7 @@ class TargetedValue:
     confidence: float = 0.0
     source: Optional[str] = None
     crops: int = 0
+    candidates: list = field(default_factory=list)  # status "unreadable": possible readings, never a value
 
 
 @dataclass
@@ -155,7 +168,8 @@ def combine_readings(key: str, readings: list) -> TargetedValue:
         statuses = {r.status for r in unread}
         status = ("unreadable" if "unreadable" in statuses else
                   "failed" if statuses == {"no_answer"} else "box_miss")
-        return TargetedValue(status, crops=n)
+        candidates = list(dict.fromkeys(c for r in unread if r.status == "unreadable" for c in r.candidates))
+        return TargetedValue(status, crops=n, candidates=candidates if status == "unreadable" else [])
 
     if key in LIST_FIELDS:
         if unread:
@@ -216,6 +230,11 @@ def crop_field_regions(images: list, locations: list, keys: list) -> tuple:
 
 # ------------------------------------------------------------------ API call
 
+def _strings(value) -> list:
+    """Non-empty strings of a model list, as given."""
+    return [v for v in (value if isinstance(value, list) else []) if isinstance(v, str) and v.strip()]
+
+
 def _unit(value) -> float:
     try:
         c = float(value)
@@ -236,7 +255,7 @@ def reread_fields(images: list, extraction, keys: list) -> FieldRecheck:
     if not crops:
         return recheck
     descriptions = "\n".join(f"- {k}: {FIELD_DESCRIPTIONS[k]}" for k in recheck.attempted)
-    contents: list = [REREAD_PROMPT.format(descriptions=descriptions)]
+    contents: list = [REREAD_PROMPT.format(descriptions=descriptions, max_candidates=MAX_CANDIDATES)]
     for i, (key, crop) in enumerate(crops, start=1):
         contents += [f"Crop {i} - field: {key}", image_part(crop, CROP_MAX_SIDE)]
     try:
@@ -256,15 +275,17 @@ def reread_fields(images: list, extraction, keys: list) -> FieldRecheck:
         if c is None or c.get("status") not in CROP_STATUSES:
             recheck.readings.append(CropReading(key, "no_answer", [], 0.0))
             continue
-        values = [v for v in (c.get("values") if isinstance(c.get("values"), list) else [])
-                  if isinstance(v, str) and v.strip()]
+        values = _strings(c.get("values"))
+        status = c["status"] if c["status"] != "read" or values else "unreadable"
         source = c.get("received_date_source")
         recheck.readings.append(CropReading(
             field=key,
-            status=c["status"] if c["status"] != "read" or values else "unreadable",
-            values=values if c["status"] == "read" else [],
+            status=status,
+            values=values if status == "read" else [],
             confidence=_unit(c.get("confidence")),
             source=(source if source in RECEIVED_DATE_SOURCES else "none") if key == "received_date" else None,
+            candidates=(["".join(v.split()) for v in _strings(c.get("candidates"))][:MAX_CANDIDATES]
+                        if status == "unreadable" and key in CANDIDATE_FIELDS else []),
         ))
     logger.info("Re-read %d field(s) from %d crop(s); statuses=%s", len(recheck.attempted), len(crops),
                 [r.status for r in recheck.readings])

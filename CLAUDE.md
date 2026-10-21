@@ -5,6 +5,12 @@ This is a hackathon project (Open Code AI Hackathon 2026, in partnership with th
 The lab receives samples daily from HMOs (health funds) and hospitals. Each sample arrives with a commitment form ("טופס התחייבות"): printed, scanned, photographed with a phone, or handwritten. Today a lab worker types everything into Excel manually.
 LabExtract replaces this: the user drags in a batch of forms (e.g. 30 forms: scanned PDFs + phone photos). The engine splits them into individual forms, identifies the form type (which HMO/hospital), extracts the fields, normalizes them, assigns a confidence score per field, and shows a review table where uncertain fields are highlighted in orange. The user fixes them and exports a ready Excel file.
 Core principle: an empty, flagged field is ALWAYS better than a guessed value. The engine must never guess.
+Reading vs. approving (approved by the user, 2026-10-21): in the high-resolution crop passes (name check and
+targeted re-read) the model ALWAYS gives its best reading - for names with a count of uncertain letters, for
+unreadable numbers with candidate readings. Code decides what is approved: a name only when every reading agrees
+with very high confidence and no uncertain letter; a number candidate only after validation (e.g. the ID check
+digit), and even then only as an unverified suggestion. Anything not approved stays empty and flagged in the
+export, with the reading shown to the reviewer as an orange "suggestion - unverified".
 
 IMPORTANT: Always reply to me in Hebrew. Keep all code, file names, folder names, identifiers, comments and docstrings in English.
 
@@ -148,7 +154,7 @@ Local database (approved by the user, replaces the old rule "nothing personal is
 - FIELD CROPS are stored for every form, also after approval (JPEG quality 85, long side up to 1200 px): the user wants
   a crop next to every field, also when a saved form is reopened.
 - ONLY WHILE A FORM IS NOT APPROVED: page previews (JPEG quality 85, up to 1600 px) and, inside record_json,
-  suggestions (plain-text readings of handwritten names - unverified personal data), alternatives and notes.
+  suggestions (plain-text readings of handwritten names and number candidates - unverified personal data), alternatives and notes.
   Approving the form deletes the page previews and strips suggestions/alternatives/notes; the final values, flag
   codes and the reviewer's edits stay.
 - NEVER STORED: raw_texts (the model's readings of the text as written), the uploaded files themselves.
