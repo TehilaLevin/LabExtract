@@ -67,6 +67,7 @@ THINKING_LEVELS = ("minimal", "low", "medium", "high")
 PRICES_PER_MTOK = {
     "claude-sonnet-5-5": (2.00, 10.00, 0.20, 2.50),
     "claude-opus-5-5": (4.00, 20.00, 0.20, 5.00),
+    "claude-fable-5-1": (10.00, 50.00, 0.25, 12.50),
     "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125),
 }
 
@@ -103,18 +104,25 @@ _LOW_EFFORT_PURPOSES = ("orientation", "split")
 # budget_tokens and temperature are rejected). Effort stays CLAUDE_EFFORT (high by default).
 THINKING_PURPOSES = ("extract", "reread_fields")
 THINKING_CONFIG = {"type": "adaptive"}
+NAME_CHECK_PURPOSE = "verify_names"
 _THINKING_TO_EFFORT = {"minimal": "low", "low": "low", "medium": "medium", "high": "high"}
 
 
 def check_configured() -> None:
     """Raise RuntimeError with a clear message when the API key or effort setting is wrong."""
     config.CLAUDE_API_KEY  # noqa: B018 - raises when missing
-    if config.CLAUDE_EFFORT not in CLAUDE_EFFORTS:
-        raise RuntimeError(f"CLAUDE_EFFORT must be one of {CLAUDE_EFFORTS}, got {config.CLAUDE_EFFORT!r}")
+    for name in ("CLAUDE_EFFORT", "NAME_CHECK_EFFORT"):
+        if getattr(config, name) not in CLAUDE_EFFORTS:
+            raise RuntimeError(f"{name} must be one of {CLAUDE_EFFORTS}, got {getattr(config, name)!r}")
 
 
 def model_id() -> str:
     return config.CLAUDE_MODEL
+
+
+def model_for(request: ModelRequest) -> str:
+    """The name check may run on its own model (config.NAME_CHECK_MODEL); every other call uses CLAUDE_MODEL."""
+    return config.NAME_CHECK_MODEL if request.purpose == NAME_CHECK_PURPOSE else config.CLAUDE_MODEL
 
 
 def effort_for(request: ModelRequest) -> str:
@@ -122,13 +130,15 @@ def effort_for(request: ModelRequest) -> str:
         return _THINKING_TO_EFFORT[request.thinking_level]
     if request.purpose in _LOW_EFFORT_PURPOSES:
         return "low"
+    if request.purpose == NAME_CHECK_PURPOSE:
+        return config.NAME_CHECK_EFFORT
     return config.CLAUDE_EFFORT
 
 
 def cache_id(request: ModelRequest) -> str:
     """Model and request settings that change the answer (part of the dev-cache key)."""
     thinking = "|thinking=adaptive" if request.purpose in THINKING_PURPOSES else ""
-    return f"claude|{config.CLAUDE_MODEL}|effort={effort_for(request)}{thinking}"
+    return f"claude|{model_for(request)}|effort={effort_for(request)}{thinking}"
 
 
 # ------------------------------------------------------------------ images and schemas
@@ -294,7 +304,7 @@ def call(contents: list, request: ModelRequest) -> ModelReply:
 
     schema, aliases = alias_quoted_enums(to_json_schema(request.schema))
     kwargs = {
-        "model": config.CLAUDE_MODEL,
+        "model": model_for(request),
         "max_tokens": config.CLAUDE_MAX_TOKENS,
         "messages": [{"role": "user", "content": content_blocks(contents)}],
         # Sampling parameters (temperature) are rejected by current models; the JSON schema and the effort
@@ -320,7 +330,7 @@ def call(contents: list, request: ModelRequest) -> ModelReply:
     except anthropic.PermissionDeniedError:
         raise LLMQuotaError("Claude API key has no access (403)") from None
     except anthropic.NotFoundError:
-        raise LLMQuotaError(f"Claude model not found (404): check CLAUDE_MODEL={config.CLAUDE_MODEL}") from None
+        raise LLMQuotaError(f"Claude model not found (404): check model {model_for(request)}") from None
     except anthropic.BadRequestError as exc:
         # 400 messages describe the request shape (schema, limits); they never echo the images.
         if "credit balance" in str(exc.message).lower():  # every further request would fail: stop the run

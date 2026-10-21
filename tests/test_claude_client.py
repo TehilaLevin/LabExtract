@@ -220,3 +220,26 @@ def test_cache_key_depends_on_model_effort_and_purpose(monkeypatch):
 def test_cache_detail_tag_keeps_earlier_keys():
     # Orientation / split answers cached by earlier runs were keyed with these tags: they must not change.
     assert ee._CACHE_DETAIL == {"orientation": "low", "split": "medium"}
+
+
+def test_name_check_can_use_its_own_model_and_effort(claude, monkeypatch):
+    monkeypatch.setattr(config, "NAME_CHECK_MODEL", "claude-fable-5-1")
+    monkeypatch.setattr(config, "NAME_CHECK_EFFORT", "max")
+    ee.generate_json(["x"], {"type": "OBJECT"}, purpose="verify_names")
+    assert claude.kwargs["model"] == "claude-fable-5-1" and claude.kwargs["output_config"]["effort"] == "max"
+    ee.generate_json(["x"], {"type": "OBJECT"}, purpose="extract")
+    assert claude.kwargs["model"] == config.CLAUDE_MODEL
+    assert claude.kwargs["output_config"]["effort"] == config.CLAUDE_EFFORT
+    assert lp.cache_id(lp.ModelRequest(schema={}, purpose="verify_names")) == "claude|claude-fable-5-1|effort=max"
+
+
+def test_default_name_check_keeps_earlier_cache_keys():
+    # Same model and effort as before the setting existed: dev-cache answers stay valid.
+    assert config.NAME_CHECK_MODEL == config.CLAUDE_MODEL and config.NAME_CHECK_EFFORT == config.CLAUDE_EFFORT
+    assert lp.cache_id(lp.ModelRequest(schema={}, purpose="verify_names")) == \
+        f"claude|{config.CLAUDE_MODEL}|effort={config.CLAUDE_EFFORT}"
+
+
+def test_fable_price_is_known():
+    usage = {"prompt_tokens": 1000, "output_tokens": 100, "cache_read_tokens": 0, "cache_write_tokens": 0}
+    assert lp.cost_usd("claude-fable-5-1", usage) == pytest.approx((1000 * 10 + 100 * 50) / 1e6)

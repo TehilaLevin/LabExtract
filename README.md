@@ -24,6 +24,10 @@ extraction, name check, field re-read) goes through `src/claude_client.py`.
 | `CLAUDE_API_KEY` (or `ANTHROPIC_API_KEY`) | – | Anthropic API key |
 | `CLAUDE_MODEL` | `claude-opus-5-5` | used for every call type; `claude-sonnet-5-5` is about 3x cheaper but reads handwriting worse |
 | `CLAUDE_EFFORT` | `high` | `low` / `medium` / `high` / `xhigh` / `max`; orientation and splitting always run at `low` |
+| `NAME_CHECK_MODEL` | `CLAUDE_MODEL` | model for the handwritten-name crops only (small request); `claude-fable-5-1` is stronger but requires 30-day data retention at Anthropic |
+| `NAME_CHECK_EFFORT` | `CLAUDE_EFFORT` | effort for the name crops only |
+| `NAME_DICTIONARY` | `true` | correct name suggestions to a known Israeli name by look-alike letters (ז/צ, ר/ד, a dropped ו/י...) |
+| `BATCH_NAME_SHARING` | `false` | forms with the same valid ID share their names as a suggestion (off: the samples share one placeholder ID) |
 | `HIGHLIGHT_CROPS` | `true` | zoomed crops of highlighted regions sent with the page (see below) |
 | `HIGHLIGHT_DEBUG` | `false` | dev only: save those crops to `data/temp/highlight_debug/` |
 | `STRICT_VALIDATION` | `true` | the extra checks below; `false` restores the earlier ones (for comparisons) |
@@ -132,6 +136,12 @@ typing does not rerun the script; saved values are kept in `src/review_session.p
   The crop pass always returns its best reading with a count of uncertain letters; when the full page read no
   name, the crops alone approve it only if every crop agrees, no letter is uncertain, confidence >= 0.9 and the
   first / last split comes from labels or a known form convention (`NAME_AUTO_APPROVE_CONFIDENCE`).
+- Name dictionary (`data/reference/israeli_names.json`, `src/name_dictionary.py`): a suggested name word that is
+  not a known name is corrected to the single known name within two look-alike edits (seen: "אצולאי" -> "אזולאי").
+  Only the suggestion changes; the model's reading stays visible as an alternative. The list is a placeholder
+  written for development - replace it with the CBS (הלמ"ס) lists of first names and surnames.
+- First / last name order is not consistent on the forms: the evaluation compares the two names order-insensitively,
+  and the review screen has a "swap first / last name" button.
 - Unreadable numbers: the targeted re-read lists candidate readings (one per way of reading an unclear digit).
   Code keeps only candidates that pass validation (ID check digit, 6-digit central number); a single one is shown as
   a suggestion, several as alternatives. The field stays empty and flagged until the reviewer confirms.

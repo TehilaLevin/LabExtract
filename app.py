@@ -784,8 +784,13 @@ def screen_review(senders: list) -> None:
         # enter_to_submit=False: Enter in a field must never approve a form by accident.
         with st.form(key=f"fields_{rec.form_index}_{nonce}", border=False, enter_to_submit=False):
             entered = {}
+            swap_clicked = False
             for key in FIELD_KEYS:  # one full-width card per field, so the crop is large enough to read
                 entered[key] = _field_card(review, key, senders, nonce)
+                if key == "last_name":
+                    # The forms do not write first / last name in a fixed order: one click fixes a swapped pair.
+                    swap_clicked = st.form_submit_button("החלף בין שם פרטי לשם משפחה", key="swap_names",
+                                                         icon=":material/swap_horiz:")
             approve_clicked = save_clicked = reopen_clicked = False
             with st.container(key="actionbar", horizontal=True, vertical_alignment="center"):
                 if review.approved:
@@ -804,6 +809,13 @@ def screen_review(senders: list) -> None:
             else:
                 st.session_state.pending = {"pos": pos, "warnings": result.warnings}
                 st.session_state.nonce += 1
+            st.rerun()
+        if swap_clicked:
+            rs.save_edits(review, rs.swap_names(entered))
+            rs.reopen(review)
+            persist([review])
+            st.session_state.notice = "השם הפרטי ושם המשפחה הוחלפו ונשמרו. הטופס עדיין לא אושר."
+            st.session_state.nonce += 1
             st.rerun()
         if save_clicked:
             rs.save_edits(review, entered)

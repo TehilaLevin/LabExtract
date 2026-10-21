@@ -204,6 +204,7 @@ def build_record(form, extraction, name_check=None, threshold: float = config.CO
     if not extraction.error:
         _drop_commitments_equal_to_id(values, flags, effective)
         suggestions.update(_apply_name_check(values, flags, extraction, name_check, threshold))
+        _correct_name_suggestions(suggestions, alternatives)
 
     sender = values.get("sending_entity") or None
     metadata = {
@@ -451,6 +452,7 @@ NAME_KEYS = ("first_name", "last_name")
 # a first / last split taken from labeled fields or a known form convention; anything less stays an
 # unverified suggestion for the reviewer.
 NAME_AUTO_APPROVE_CONFIDENCE = 0.9
+NAME_SUGGESTION_MIN_CONFIDENCE = 0.5
 NAME_APPROVE_ASSIGNMENTS = frozenset({"labeled_fields", "convention"})
 _NAME_CLEAN_RE = re.compile(r"[\"'`׳״.,:;()\-]")
 
@@ -476,7 +478,11 @@ def _best_reading(readings: list):
 
 
 def _suggestion(reading, extraction) -> dict:
-    """Best available reading as a suggestion: the crop reading first, else the page reading."""
+    """Best available reading as a suggestion: the crop reading first, else the page reading. A crop reading
+    below NAME_SUGGESTION_MIN_CONFIDENCE is not shown (seen: invented names at 0.15 mislead more than an
+    empty field)."""
+    if reading is not None and reading.confidence < NAME_SUGGESTION_MIN_CONFIDENCE:
+        reading = None
     if reading is not None:
         if reading.first_name or reading.last_name:
             return {k: v for k, v in (("first_name", reading.first_name), ("last_name", reading.last_name)) if v}
@@ -507,6 +513,48 @@ def _approve_from_crops(values: dict, flags: dict, readings: list) -> dict:
     for k in NAME_KEYS:
         flags.pop(k, None)
     return {}
+
+
+def _correct_name_suggestions(suggestions: dict, alternatives: dict) -> None:
+    """Dictionary check of the name suggestions (src/name_dictionary.py). A corrected suggestion replaces the
+    model's reading, which is kept as an alternative for the reviewer. Mutates both dicts."""
+    if not config.NAME_DICTIONARY_ENABLED:
+        return
+    from src.name_dictionary import correct_name, load_names
+
+    names = load_names(str(config.NAMES_PATH))
+    for key in NAME_KEYS:
+        reading = suggestions.get(key)
+        corrected = correct_name(reading, names) if reading else None
+        if corrected:
+            suggestions[key] = corrected
+            alternatives[key] = [reading] + [a for a in alternatives.get(key, []) if a != reading]
+
+
+def apply_batch_name_sharing(records: list) -> int:
+    """With BATCH_NAME_SHARING: forms of one batch with the same valid, unflagged ID are one patient. A form
+    whose names are both empty gets the names shown on another form of that patient (an approved value, else
+    its suggestion) as an unverified suggestion - never as a value. Returns the number of records changed."""
+    if not config.BATCH_NAME_SHARING:
+        return 0
+    by_id: dict = {}
+    for rec in records:
+        ident = rec.values.get("id_number", "")
+        if ident and "id_number" not in rec.flags and validate_israeli_id(ident):
+            by_id.setdefault(_id_key(ident), []).append(rec)
+    changed = 0
+    for group in by_id.values():
+        for rec in group:
+            if any(rec.values.get(k) for k in NAME_KEYS) or all(rec.suggestions.get(k) for k in NAME_KEYS):
+                continue
+            source = next((o for o in group if o is not rec and all(o.values.get(k) for k in NAME_KEYS)), None)
+            names = ({k: source.values[k] for k in NAME_KEYS} if source else next(
+                ({k: o.suggestions[k] for k in NAME_KEYS} for o in group
+                 if o is not rec and all(o.suggestions.get(k) for k in NAME_KEYS)), None))
+            if names:
+                rec.suggestions.update(names)
+                changed += 1
+    return changed
 
 
 def _apply_name_check(values: dict, flags: dict, extraction, name_check, threshold: float) -> dict:
@@ -643,6 +691,9 @@ def process_files(files, progress: Optional[ProgressCallback] = None) -> list:
         mismatched = apply_batch_id_consistency(records)
         if mismatched:
             logger.info("Batch ID check: %d record(s) flagged id_batch_mismatch", mismatched)
+        shared = apply_batch_name_sharing(records)
+        if shared:
+            logger.info("Batch name sharing: %d record(s) got a name suggestion from another form", shared)
         for record in records:
             for line in diagnostic_lines(record):
                 logger.info(line)

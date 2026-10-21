@@ -38,6 +38,12 @@ PDF_DPI = 300
 # orientation and splitting run at low effort, extraction / name check / re-read at CLAUDE_EFFORT.
 CLAUDE_MODEL = (os.getenv("CLAUDE_MODEL") or "claude-opus-5-5").strip()
 CLAUDE_EFFORT = (os.getenv("CLAUDE_EFFORT") or "high").strip().lower()
+# The name check (high-resolution crops of handwritten names) can use its own model and effort: it is a
+# small request, so a stronger model costs a few cents per form. NAME_CHECK_MODEL=claude-fable-5-1 note:
+# Fable 5.1 requires 30-day data retention at Anthropic (no zero data retention) - a privacy decision
+# for real patient data.
+NAME_CHECK_MODEL = (os.getenv("NAME_CHECK_MODEL") or CLAUDE_MODEL).strip()
+NAME_CHECK_EFFORT = (os.getenv("NAME_CHECK_EFFORT") or CLAUDE_EFFORT).strip().lower()
 CLAUDE_TIMEOUT_S = 180      # per attempt; thinking at high effort can take a while
 CLAUDE_MAX_RETRIES = 4      # SDK retries with exponential backoff: 429, 529, 5xx, connection errors
 CLAUDE_MAX_TOKENS = 16000   # output incl. thinking; the JSON answers themselves are ~1-3k tokens
@@ -58,6 +64,14 @@ def _env_flag(name: str, default: bool) -> bool:
 # Targeted re-read of flagged number fields from high-resolution crops (at most one extra
 # request per form). FIELD_REREAD=false turns it off, e.g. for a baseline evaluation run.
 FIELD_REREAD_ENABLED = _env_flag("FIELD_REREAD", True)
+# Name suggestions checked against a dictionary of Israeli names (src/name_dictionary.py): a reading that is
+# not a known name is corrected only to the single known name reachable by look-alike letter edits. Changes
+# the unverified suggestion only, never an approved value. NAME_DICTIONARY=false turns it off.
+NAME_DICTIONARY_ENABLED = _env_flag("NAME_DICTIONARY", True)
+# Several forms of one batch with the same valid ID belong to one patient: a form whose names are empty gets
+# the names read on the other forms as an unverified suggestion. Off by default: the sample forms all carry
+# the same placeholder ID for different patients. BATCH_NAME_SHARING=true turns it on (real batches).
+BATCH_NAME_SHARING = _env_flag("BATCH_NAME_SHARING", False)
 # Which page version name / field crops are cut from: "original" (scanned pixels, only the
 # deskew geometry applied, so boxes still line up) or "processed" (contrast/brightness fixed,
 # the version the full-page pass saw). CROP_SOURCE=processed switches back for comparison.
@@ -101,4 +115,5 @@ DB_PATH = DATA_DIR / "db" / "labextract.db"
 DB_STORE_CROPS = _env_flag("DB_STORE_CROPS", True)
 REFERENCE_DIR = DATA_DIR / "reference"
 SENDERS_PATH = REFERENCE_DIR / "approved_senders.json"
+NAMES_PATH = REFERENCE_DIR / "israeli_names.json"
 PROMPT_PATH = BASE_DIR / "prompts" / "extraction_prompt.txt"

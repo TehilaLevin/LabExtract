@@ -21,10 +21,13 @@ def test_all_fields_match_after_normalization():
     assert all(ev.compare_row(TRUTH, GOOD).values())
 
 
-def test_names_count_and_swapped_names_fail():
+def test_names_count_and_swapped_names_are_correct():
+    # The forms do not write first / last name in a fixed order: a swapped pair is a correct reading.
     swapped = dict(GOOD, first_name="ישראלי", last_name="ישראל")
     out = ev.compare_row(TRUTH, swapped)
-    assert out["first_name"] is False and out["last_name"] is False
+    assert out["first_name"] is True and out["last_name"] is True
+    both_first = dict(GOOD, first_name="ישראל", last_name="ישראל")
+    assert ev.compare_row(TRUTH, both_first)["last_name"] is False
 
 
 def test_invented_name_fails_and_empty_name_fails():
@@ -304,3 +307,20 @@ def test_comparison_of_claude_configurations_prints_the_changed_settings(capsys)
 def test_run_config_records_the_claude_settings():
     cfg = ev.run_config()
     assert cfg["claude_model"] == ev.config.CLAUDE_MODEL and "highlight_crops_enabled" in cfg
+
+
+def test_swapped_names_count_as_correct():
+    truth = {k: "" for k in ev.FIELD_KEYS} | {"first_name": "טובה", "last_name": "גרין"}
+    got = {k: "" for k in ev.FIELD_KEYS} | {"first_name": "גרין", "last_name": "טובה"}
+    result = ev.compare_row(truth, got)
+    assert result["first_name"] and result["last_name"]
+    half = dict(got, last_name="טבה")
+    assert not ev.compare_row(truth, half)["first_name"]
+
+
+def test_swapped_name_suggestions_count_as_correct():
+    truth = {k: "" for k in ev.FIELD_KEYS} | {"first_name": "טובה", "last_name": "גרין", "source_file": "f",
+                                              "page_numbers": "1"}
+    values = {k: "" for k in ev.FIELD_KEYS}
+    summary = ev.summarize([(truth, values, {"first_name": "גרין", "last_name": "טובה"}, {})])
+    assert summary["suggestions"]["first_name"] == (1, 0) and summary["suggestions"]["last_name"] == (1, 0)

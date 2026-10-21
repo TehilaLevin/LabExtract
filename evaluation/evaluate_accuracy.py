@@ -7,7 +7,8 @@ Usage:
 
 Runs the full pipeline on exactly the (source_file, page) rows listed in the CSV (pages are
 taken from data/samples/), then prints per-field accuracy (exact match after normalization),
-a per-field breakdown and the list of failed fields. Every field counts, names included. An
+a per-field breakdown and the list of failed fields. Every field counts, names included (first and
+last name are compared order-insensitively: the forms do not write them in a fixed order). An
 empty expected value means the correct answer is "no value": it matches only an empty engine
 value. Correctness is decided ONLY by the ground truth - passing validation never makes a value
 correct. Unverified suggestions (handwritten names) and re-read alternatives never count as
@@ -102,6 +103,7 @@ OUTCOMES = ("correct_unflagged", "correct_flagged", "wrong_flagged", "wrong_sile
             "empty_unflagged", "no_record")
 CORRECT_OUTCOMES = frozenset({"correct_unflagged", "correct_flagged"})
 _NAME_PUNCT_RE = re.compile(r"[\"'`׳״.,:;()\-]")
+NAME_FIELDS = ("first_name", "last_name")
 
 
 # ------------------------------------------------------------------ comparison
@@ -131,10 +133,24 @@ def is_unreadable_label(value) -> bool:
     return isinstance(value, str) and value.strip().upper() == UNREADABLE_LABEL
 
 
+def names_swapped(truth: dict, first, last) -> bool:
+    """The two names are right but first / last are swapped. The forms do not write names in a consistent
+    order (confirmed by the lab side), so a swapped pair counts as a correct reading."""
+    t_first, t_last = (normalize_value(k, truth.get(k)) for k in NAME_FIELDS)
+    if is_unreadable_label(truth.get("first_name")) or is_unreadable_label(truth.get("last_name")):
+        return False
+    got = (normalize_value("first_name", first), normalize_value("last_name", last))
+    return bool(t_first and t_last) and got == (t_last, t_first)
+
+
 def compare_row(truth: dict, values: dict) -> dict:
-    """field -> True/False for one form (an UNREADABLE label never matches here: see _outcome)."""
-    return {k: (not is_unreadable_label(truth.get(k)))
-            and normalize_value(k, truth.get(k)) == normalize_value(k, values.get(k)) for k in FIELD_KEYS}
+    """field -> True/False for one form (an UNREADABLE label never matches here: see _outcome).
+    First and last name are compared order-insensitively (see names_swapped)."""
+    result = {k: (not is_unreadable_label(truth.get(k)))
+              and normalize_value(k, truth.get(k)) == normalize_value(k, values.get(k)) for k in FIELD_KEYS}
+    if names_swapped(truth, values.get("first_name"), values.get("last_name")):
+        result.update({k: True for k in NAME_FIELDS})
+    return result
 
 
 def _outcome(ok: bool, got, flagged: bool, has_record: bool, unreadable: bool = False) -> str:
@@ -182,7 +198,9 @@ def summarize(results: list) -> dict:
             suggestion = suggestions.get(k) if values is not None and not got else None
             suggestion_ok = None
             if suggestion:
-                suggestion_ok = normalize_value(k, truth.get(k)) == normalize_value(k, suggestion)
+                suggestion_ok = normalize_value(k, truth.get(k)) == normalize_value(k, suggestion) or (
+                    k in NAME_FIELDS and names_swapped(truth, *(values.get(n) or suggestions.get(n)
+                                                                for n in NAME_FIELDS)))
                 sugg[k][0 if suggestion_ok else 1] += 1
             if not ok:
                 failures.append({"source_file": truth["source_file"], "page": truth["page_numbers"], "field": k,
@@ -405,7 +423,8 @@ def labels_fingerprint(truth_rows: list) -> str:
 
 # Claude configuration of a run, recorded in the summary and printed by a comparison.
 CONFIG_KEYS = ("CLAUDE_MODEL", "CLAUDE_EFFORT", "HIGHLIGHT_CROPS_ENABLED", "STRICT_VALIDATION", "EVAL_MODE",
-               "FIELD_REREAD_ENABLED", "CROP_SOURCE")
+               "FIELD_REREAD_ENABLED", "CROP_SOURCE", "NAME_CHECK_MODEL", "NAME_CHECK_EFFORT", "NAME_DICTIONARY_ENABLED",
+               "BATCH_NAME_SHARING")
 
 
 def run_config() -> dict:

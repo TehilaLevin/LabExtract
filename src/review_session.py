@@ -104,6 +104,11 @@ class ApprovalResult:
     empty: list         # fields left empty (reported, never blocking)
 
 
+def swap_names(entered: dict) -> dict:
+    """The entered values with first and last name exchanged (the forms do not use a fixed name order)."""
+    return {**entered, "first_name": entered.get("last_name", ""), "last_name": entered.get("first_name", "")}
+
+
 def save_edits(review: FormReview, entered: dict, senders_path=None, today: Optional[date] = None) -> tuple:
     """Store the reviewer's values (normalized). Returns (warnings, empty fields) for those values."""
     warnings, empty = {}, []
