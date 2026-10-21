@@ -211,10 +211,10 @@ _FLAGGED = _rx("שדות לבדיקה", "שדות מסומנים", "שדה מס�
 _PENDING = _rx("ממתינ", "בהמתנה", "המתנה", "לא אושר", "לא מאושר", "טרם אושר", "טרם נבדק", "לא נבדק", stem=True)
 _PENDING_WORDS = _rx("לבדיקה", "לאישור", "בבדיקה")
 _APPROVED = _rx("אושר", "מאושר", stem=True)
-_INTAKE = _rx("תאריך קליטה", "תאריך הקליטה", "נקלט", "קליטה", "עובד", "חולץ", "חילוץ", "הועל", "נסרק", "נוסף",
+_INTAKE = _rx("לפי תאריך קליטה", "לפי תאריך הקליטה", "תאריך קליטה", "תאריך הקליטה", "נקלט", "קליטה", "עובד", "חולץ", "חילוץ", "הועל", "נסרק", "נוסף",
               "נשמר", stem=True)
-_APPROVAL_DATE = _rx("תאריך אישור", "תאריך האישור", "אישור")
-_RECEIVED = _rx("התקבל", "נתקבל", "קבלה", "הגיע", stem=True)
+_APPROVAL_DATE = _rx("לפי תאריך אישור", "לפי תאריך האישור", "תאריך אישור", "תאריך האישור", "אישור")
+_RECEIVED = _rx("לפי תאריך קבלה", "לפי תאריך הקבלה", "התקבל", "נתקבל", "קבלה", "הגיע", stem=True)
 _SENT = _rx("נשלח", stem=True)
 _HOSPITAL_WORDS = _rx("בתי חולים", "בית חולים", "בית החולים", "בתי החולים", "ביח", "ביהח", "מרכז רפואי",
                       "מרכזים רפואיים")
@@ -237,9 +237,9 @@ _COUNT = _rx("כמה", "כמות", "סך", "סהכ", "מספר הטפסים", "�
 _LIST = _rx("הצג", "הציגו", "הציגי", "תציג", "תציגי", "הראה", "הראו", "הראי", "תראה", "תראי", "אילו", "איזה",
             "איזו", "אלו", "רשימה", "רשימת", "פרט", "מהם", "מה הם")
 _STOPWORDS = frozenset("""
-טפסים טופס טפסי טופסי רשומות רשומה את של עם יש מה הם הן בו בה להם כל כלל כולל הכל במאגר מאגר ארכיון עד
+טפסים טופס טפסי טופסי רשומות רשומה את של עם יש מה הם הן בו בה להם כל כלל כולל הכל במאגר מאגר ארכיון
 עכשיו כרגע קיימים קיים לי אני רוצה תן תני בבקשה רק גם או מתוך אשר עדיין עוד סטטוס מצב זה זאת אותם אותן
-כאלה היו היה הינם נמצאים נמצא שלהם לפי בין שם מ ב ל ה ו ש
+כאלה היו היה הינם נמצאים נמצא שלהם מ ב ל ה ו ש
 """.split())
 # Sender aliases that are also common Hebrew words or first names: matched only when the question speaks
 # about a sender ("בית חולים", "גורם שולח", "נשלחו"...), otherwise left to the model / a clarification.
@@ -330,6 +330,7 @@ def parse_question(question: str, present_senders=(), today: Optional[date] = No
         ranges += [span(today)] * len(found)
     if len(ranges) == 2 and all(start == end for start, end in ranges):  # "בין 01/10/2026 ל-05/10/2026"
         ranges = [(min(r[0] for r in ranges), max(r[0] for r in ranges))]
+        _, text = _take(text, _rx("בין"))
     if len(ranges) > 1:
         clarify = clarify or Clarification("השאלה כוללת כמה טווחי תאריכים. שאלו על טווח אחד בכל פעם.")
     date_range = ranges[0] if len(ranges) == 1 else None
@@ -416,11 +417,12 @@ def parse_question(question: str, present_senders=(), today: Optional[date] = No
     missing_words = [w for pattern in _MISSING for w in _take(text, pattern)[0]]
     for pattern in _MISSING:
         _, text = _take(text, pattern)
-    fields_found = []
+    fields_found, field_words = [], {}
     for key, phrases in _FIELD_PHRASES.items():
         found, text = _take(text, _rx(*phrases))
         if found:
             fields_found.append(key)
+            field_words[key] = found
     missing_field = None
     if missing_words:
         concrete = [k for k in fields_found if k != "name"]
@@ -438,6 +440,15 @@ def parse_question(question: str, present_senders=(), today: Optional[date] = No
                 for k in ("commitment_numbers", "central_numbers", "id_number", "received_date", "sending_entity")))
     if "received_date" in fields_found and not missing_field:
         received.append("תאריך קבלה")
+    unplaced = []
+    if not missing_words:
+        for key in fields_found:
+            placed = ((key == "sending_entity" and (sender or sender_kind or specific or group_by == "sending_entity"))
+                      or (key == "received_date" and date_range))
+            if not placed:
+                unplaced += [w for phrase in field_words[key] for w in phrase.split()]
+    if not date_range:  # "לפי תאריך קבלה" without a date asks for a breakdown by date, which is not supported
+        unplaced += [w for phrase in received + intake + approval_date if "לפי" in phrase for w in phrase.split()]
 
     date_field = None
     if date_range:
@@ -465,7 +476,7 @@ def parse_question(question: str, present_senders=(), today: Optional[date] = No
         intent = None
     has_filter = any((status, sender, sender_kind, missing_field, flagged, date_field, limit))
     understood = bool(intent or has_filter or clarify)
-    leftovers = [t for t in text.split() if not _is_stopword(t)]
+    leftovers = unplaced + [t for t in text.split() if not _is_stopword(t)]
 
     if clarify is not None:
         return clarify, leftovers

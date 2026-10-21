@@ -271,6 +271,15 @@ def test_low_confidence_id_confirmed_by_checksum_and_agreement():
     assert rec.values["id_number"] == VALID_ID and "id_number" not in rec.flags
 
 
+def test_agreement_on_a_short_id_does_not_confirm_it():
+    """The check digit ignores leading zeros: "0011223344" written, both readings "11223344" (sample part 1
+    page 10). Two readings that dropped the same zeros must not clear the low-confidence flag."""
+    ext = _ext(id_number={"value": "11223344", "confidence": 0.65})
+    rec = _rec(ext, _recheck(_reading("id_number", ["11223344"])))
+    assert rec.values["id_number"] == "11223344" and rec.flags["id_number"] == "low_confidence"
+    assert rec.diagnostics["fields"]["id_number"]["reread"] == "agreed"
+
+
 def test_low_confidence_reread_does_not_confirm_id():
     rec = _rec(_ext(id_number={"value": VALID_ID, "confidence": 0.6}),
                _recheck(_reading("id_number", [VALID_ID], conf=0.6)))

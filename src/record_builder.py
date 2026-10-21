@@ -249,7 +249,9 @@ def apply_batch_id_consistency(records: list) -> int:
 # - Re-read failed / unreadable / box missed / crops inconsistent: nothing changes (an empty
 #   field whose crop was unreadable is flagged "unreadable").
 # - Same value as the full page: kept as it was. Only for the ID (checksum) does agreement of two
-#   confident readings clear a "low_confidence" flag; other fields have no check strong enough.
+#   confident readings clear a "low_confidence" flag, and only for a full 9-digit ID: the check digit
+#   cannot tell added or dropped leading zeros apart (sample part 1 page 10: "0011223344" written, both
+#   readings "11223344"), so a shorter reading stays flagged. Other fields have no check strong enough.
 # - The full page had nothing: the crop value is shown only if it passes validation with
 #   confidence >= threshold, and stays flagged "reread_single_reading".
 # - The full page failed validation, the crop passes: the crop value replaces it, flagged
@@ -267,6 +269,7 @@ def apply_batch_id_consistency(records: list) -> int:
 # field stays flagged: model confidence is a heuristic, not a probability of being right.
 
 REREAD_CONFIRM_FIELDS = frozenset({"id_number"})
+ID_DIGITS = 9
 REREAD_REPLACE_FIELDS = frozenset({"id_number", "central_numbers", "commitment_numbers", "received_date"})
 _KEEP = object()  # flag override sentinel: leave the flag computed from the effective value
 
@@ -312,7 +315,8 @@ def _decide(key: str, orig, target, extraction, threshold: float, today: date) -
     o_reason, o_text = _validate(key, o_raw, orig.source, today, collected)[1], _as_text(key, o_raw)
     o_ok = o_reason is None
     if comparable(key, o_raw) == comparable(key, target.value):
-        if key in REREAD_CONFIRM_FIELDS and o_ok and t_ok and orig.confidence < threshold:
+        if (key in REREAD_CONFIRM_FIELDS and o_ok and t_ok and orig.confidence < threshold
+                and len(re.sub(r"\D", "", str(o_raw))) == ID_DIGITS):
             return "confirmed", None, None, []
         return "agreed", None, _KEEP, []
     if key in LIST_FIELDS and t_ok and comparable(key, o_raw) < comparable(key, target.value):

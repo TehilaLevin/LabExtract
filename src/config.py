@@ -112,7 +112,7 @@ OUTPUT_DIR = DATA_DIR / "output"
 # Local SQLite store of reviewed records (src/record_store.py). It holds personal data: git-ignored, local only.
 # DB_ENABLED=false turns it off.
 DB_ENABLED = _env_flag("DB_ENABLED", True)
-DB_PATH = DATA_DIR / "db" / "labextract.db"
+DB_PATH = Path(os.getenv("DB_PATH") or DATA_DIR / "db" / "labextract.db")
 # Whether the database keeps images (field crops, and page previews of forms not yet approved). false: no image
 # is stored and saved forms open without images.
 DB_STORE_CROPS = _env_flag("DB_STORE_CROPS", True)

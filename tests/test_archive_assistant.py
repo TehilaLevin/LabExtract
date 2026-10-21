@@ -369,3 +369,36 @@ def test_last_change_moves_on_save_and_delete():
     assert saved[0] == 1 and saved[1]
     store.delete_all()
     assert store.last_change() == (0, None)
+
+
+# ------------------------------------------------------------------ "don't know" instead of a made-up answer
+
+@pytest.mark.parametrize("question", [
+    "כמה טפסים התקבלו עד אתמול?",            # "until" is not a single day
+    "כמה טפסים התקבלו מאז 01/10/2026?",
+    "כמה טפסים בין 01/10/2026",               # a range with one end
+    "כמה טפסים לפי תאריך?",                   # a breakdown by date is not supported
+    "כמה טפסים לפי תאריך קבלה",
+    "כמה טפסים יש להם מספר התחייבות?",        # a field condition other than "missing"
+    "כמה טפסים עם שם",
+    "כמה טפסים עם ת\"ז לא תקינה?",
+    "כמה טפסים לא ממכבי?",                    # negation
+    "כמה טפסים שאינם ממתינים?",
+    "כמה טפסים התקבלו מחר?",
+    "כמה טפסים התקבלו בשנה שעברה?",
+    "כמה טפסים של גברים?",                    # data the archive does not hold
+    "מה הממוצע של טפסים ביום?",
+    "כמה טפסים אושרו על ידי רחל?",
+    "כמה טפסים מאסותא?",                      # several approved senders start with this name
+    "כמה טפסים פתוחים?",
+    "כמה טפסים עם מספר מרכזי כפול?",
+])
+def test_questions_the_rules_cannot_answer_exactly_are_never_answered(question):
+    result = aa.interpret(question, present_senders=["מכבי", "שיבא"], today=TODAY, use_model=False)
+    assert isinstance(result, aa.Clarification), (question, result)
+
+
+def test_date_clarification_buttons_still_answer_with_the_chosen_date():
+    for suffix, field in (("לפי תאריך קבלה", "received_date"), ("לפי תאריך קליטה", "created_at")):
+        query = aa.interpret(f"כמה טפסים מהיום {suffix}", today=TODAY, use_model=False)
+        assert isinstance(query, aa.Query) and query.date_field == field
