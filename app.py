@@ -74,7 +74,9 @@ from src.field_crops import outline_boxes
 from src.claude_client import LLMError, LLMQuotaError, check_configured
 from src.validators import list_approved_senders
 
-st.set_page_config(page_title="LabExtract", page_icon="🧪", layout="wide", initial_sidebar_state="expanded")
+# Tab icon: the pink and teal rings of the design (assets/favicon.png).
+st.set_page_config(page_title="LabExtract", page_icon=str(Path(__file__).resolve().parent / "assets" / "favicon.png"),
+                   layout="wide", initial_sidebar_state="expanded")
 
 SCREENS = {"upload": "העלאה", "summary": "סיכום", "review": "סקירה", "export": "ייצוא", "database": "מאגר"}
 STEP_SCREENS = ("upload", "summary", "review", "export")  # the four steps of one run; "database" stands apart
@@ -130,7 +132,7 @@ PARTNER_HTML = f"""
   <div class="lx-partner-logos"><img src="{_data_uri('sheba_logo.png')}" alt="שיבא תל השומר">
   <img src="{_data_uri('moh_logo.png')}" alt="משרד הבריאות"></div></footer>
 """
-PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים שהועלו נמחקים בסיום החילוץ. הרשומות נשמרות במחשב הזה בלבד '
+PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים שהועלו נמחקים בסיום החילוץ. הרשומות נשמרות במאגר של המערכת בלבד '
                 'ואפשר למחוק אותן במסך המאגר. שום נתון אישי לא נכתב ליומן.</div>')
 UPLOAD_TYPES = ["pdf", "png", "jpg", "jpeg", "tif", "tiff"]
 DEV_CACHE_BANNER = ("**מצב פיתוח: DEV_CACHE פעיל.** תשובות המודל (שעלולות לכלול נתונים אישיים) נשמרות בדיסק "
