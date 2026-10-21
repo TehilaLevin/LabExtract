@@ -23,6 +23,7 @@ Streamlit limits and how they are handled:
   "approve form" has to move to the next form.
 """
 import base64
+import html
 import threading
 import uuid
 import time
@@ -35,6 +36,7 @@ import streamlit as st
 import altair as alt
 
 from src import achievements as achv
+from src import archive_assistant as aa
 from src import config
 from src import overview
 from src import record_store
@@ -290,6 +292,17 @@ div[class*="st-key-card"], .st-key-formimage, .st-key-downloadcard, .st-key-wait
     border-radius: 22px !important; box-shadow: 0 6px 22px rgba(27, 26, 107, 0.06); }}
 [data-testid="stBaseButton-secondary"] {{ border-color: #1B1A6B; color: #1B1A6B; }}
 .stApp button[data-testid^="stBaseButton-"]:not([data-testid="stBaseButton-tertiary"]) {{ border-radius: 999px !important; }}
+/* Archive assistant (database screen). */
+.st-key-assistant {{ background: #FFFFFF; border-radius: 22px !important; box-shadow: 0 6px 22px rgba(27, 26, 107, 0.06);
+    margin-bottom: 18px; }}
+.st-key-assistant_examples, .st-key-assistant_options {{ flex-wrap: wrap; gap: 6px; }}
+.st-key-assistant_examples button, .st-key-assistant_options button {{ min-height: 32px; padding: 2px 12px;
+    background: #FBEAF2; border-color: #F2C6DB; color: #1B1A6B; }}
+.st-key-assistant_examples button p, .st-key-assistant_options button p {{ font-size: 13px; }}
+.lx-answer {{ font-size: 20px; font-weight: 700; color: #1B1A6B; margin: 4px 0; }}
+.lx-chips {{ display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 2px 0 8px; }}
+.lx-chip.info {{ color: #1B1A6B; background: #ECEBF4; }}
+.lx-note {{ font-size: 13px; color: #9A5800; }}
 </style>
 """
 
@@ -299,7 +312,8 @@ div[class*="st-key-card"], .st-key-formimage, .st-key-downloadcard, .st-key-wait
 def init_state() -> None:
     defaults = {"screen": "upload", "reviews": None, "pos": 0, "uploader_n": 0, "nonce": 0,
                 "pending": None, "notice": None, "run_error": None, "batch_id": None, "notice_error": None,
-                "toasts": [], "ach_unlocked": {}, "ach_processed": 0}
+                "toasts": [], "ach_unlocked": {}, "ach_processed": 0,
+                "assistant_pending": None, "assistant_result": None, "assistant_cache": {}}
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
 
@@ -921,6 +935,98 @@ def open_stored(batch_id: str, form_index: int) -> None:
     go("review", next((i for i, r in enumerate(loaded) if r.form_index == form_index), 0))
 
 
+ASSISTANT_MAX_ROWS = 200  # rows drawn in the results table; the answer still counts all of them
+
+
+def _ask(question: str) -> None:
+    """Button callback: queue a question. It is interpreted in the script body, under a spinner."""
+    st.session_state.assistant_q = question
+    st.session_state.assistant_pending = question
+
+
+def _ask_typed() -> None:
+    _ask(st.session_state.get("assistant_q", ""))
+
+
+def archive_assistant_section(present_senders: list) -> None:
+    """Questions in Hebrew about the stored records (src/archive_assistant.py).
+
+    Fixed rules read the usual questions; Claude is asked only about a question they do not understand, with
+    the question text alone, at most once per distinct question (kept in session_state, so reruns never call
+    it again). The answer itself is always computed from the database rows, never by the model.
+    """
+    with st.container(border=True, key="assistant"):
+        st.markdown('<div class="lx-fields-head"><strong style="font-size:18px">עוזר המאגר</strong>'
+                    '<span class="lx-muted">שאלה בעברית · התשובה מחושבת מהרשומות השמורות</span></div>',
+                    unsafe_allow_html=True)
+        with st.container(horizontal=True, key="assistant_examples"):
+            for i, example in enumerate(aa.EXAMPLES):
+                st.button(example, key=f"ask_ex_{i}", on_click=_ask, args=(example,))
+        with st.form("assistant_form", border=False):
+            text_col, button_col = st.columns([5, 1], vertical_alignment="bottom")  # RTL: the input on the right
+            text_col.text_input("שאלה", key="assistant_q", max_chars=aa.MAX_QUESTION_CHARS,
+                                placeholder="למשל: כמה טפסים ממכבי ממתינים לבדיקה?", label_visibility="collapsed")
+            button_col.form_submit_button("שאל", type="primary", on_click=_ask_typed, icon=":material/search:",
+                                          width="stretch")
+        st.markdown('<span class="lx-muted">שאלות שהכללים הקבועים לא מבינים נשלחות ל-Claude כטקסט בלבד, בלי רשומות. '
+                    'אל תקלידו שמות או מספרי זהות.</span>', unsafe_allow_html=True)
+
+        question = st.session_state.assistant_pending
+        if question is not None:
+            st.session_state.assistant_pending = None
+            key = " ".join(question.split())
+            result = st.session_state.assistant_cache.get(key)
+            if result is None:
+                with st.spinner("מפרש את השאלה…"):
+                    result = aa.interpret(question, present_senders=present_senders)
+                if getattr(result, "source", "") == "model":  # rules are free to rerun; model answers are not
+                    st.session_state.assistant_cache[key] = result
+            st.session_state.assistant_result = result
+        if st.session_state.assistant_result is not None:
+            _assistant_answer(st.session_state.assistant_result)
+
+
+def _assistant_answer(result) -> None:
+    if isinstance(result, aa.Clarification):
+        st.info(result.message, icon=":material/help:")
+        if result.options:
+            with st.container(horizontal=True, key="assistant_options"):
+                for i, (label, question) in enumerate(result.options):
+                    st.button(label, key=f"ask_opt_{i}", on_click=_ask, args=(question,))
+        return
+    try:  # re-run on every render: the answer always reflects the database as it is now
+        answer = aa.run_query(result, record_store.archive_rows())
+    except Exception as exc:
+        st.error(f"החיפוש במאגר נכשל ({type(exc).__name__}).")
+        return
+    origin = ("פוענח בעזרת Claude – ודאו שהפירוש מתאים לשאלה" if result.source == "model"
+              else "פוענח לפי כללים קבועים")
+    chips = "".join(f'<span class="lx-chip info">{html.escape(c)}</span>' for c in aa.describe(result))
+    st.markdown(f'<div class="lx-answer">{html.escape(answer.message)}</div>'
+                f'<div class="lx-chips"><span class="lx-muted">הבנתי:</span>{chips}'
+                f'<span class="lx-muted">· {origin}</span></div>'
+                + "".join(f'<div class="lx-note">⚠ {html.escape(n)}</div>' for n in answer.notes),
+                unsafe_allow_html=True)
+    if answer.groups:
+        table = pd.DataFrame(answer.groups).rename(columns={"label": aa.GROUP_LABELS[result.group_by],
+                                                            "count": "טפסים", "percent": "אחוז"})
+        st.dataframe(_rtl_columns(table), hide_index=True)
+        return
+    if not answer.rows:
+        return
+    shown = answer.rows[:ASSISTANT_MAX_ROWS]
+    view = _rtl_columns(pd.DataFrame(aa.display_rows(aa.Answer(answer.message, answer.count, rows=shown))))
+    st.markdown('<span class="lx-muted">לחצו על שורה כדי לפתוח את הטופס במסך הסקירה · שמות לא מוצגים ות״ז מוסתרת'
+                + (f" · מוצגות {len(shown)} השורות הראשונות" if len(shown) < len(answer.rows) else "")
+                + "</span>", unsafe_allow_html=True)
+    event = st.dataframe(view, hide_index=True, on_select="rerun", selection_mode="single-row",
+                         key=f"assistant_rows_{st.session_state.nonce}")
+    if event.selection.rows:
+        row = shown[event.selection.rows[0]]
+        open_stored(row["batch_id"], int(row["form_index"]))
+        st.rerun()
+
+
 def screen_database() -> None:
     hero("מאגר · שמירה מקומית", "מאגר הרשומות",
          "כל טופס שחולץ נשמר כאן – ממתין לאישור או מאושר – וזמין גם אחרי סגירת הדפדפן. "
@@ -940,6 +1046,9 @@ def screen_database() -> None:
   <div class="lx-tile ok"><div class="lx-tile-label">אושרו</div><div class="lx-tile-value">{total["approved"]}</div></div>
   <div class="lx-tile flag"><div class="lx-tile-label">ממתינים</div><div class="lx-tile-value">{total["pending"]}</div></div>
 </div>""", unsafe_allow_html=True)
+
+    if config.ARCHIVE_ASSISTANT_ENABLED:
+        archive_assistant_section(known_senders)
 
     try:
         overview_section(record_store.sender_counts(approved_only=True))

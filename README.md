@@ -113,6 +113,28 @@ measured on the samples may not carry over.
    images, "מחק תמונות בלבד" deletes every image and keeps the values, and "מחק את כל המאגר" deletes everything; each
    needs a confirmation. Limitations: **nothing is deleted automatically**, and the file is **not encrypted at rest**.
 
+### Archive assistant (database screen)
+
+"עוזר המאגר" answers questions in Hebrew about the stored records (`src/archive_assistant.py`), e.g. "כמה טפסים
+ממתינים לבדיקה?", "הצג טפסים ממכבי שממתינים לבדיקה", "אילו טפסים חסר בהם מספר התחייבות?", "כמה טפסים התקבלו היום?",
+"כמה טפסים מכל גורם שולח?". A question becomes a small, closed query: count / list / breakdown, filtered by review
+status, one approved sender (with its campuses) or health funds / hospitals, one empty field, open flags, and one
+date range on the received date ("התקבל" stamp), the intake date or the approval date. "Waiting for review" is the
+app's own status `pending`. The query runs in Python on `record_store.archive_rows()`; forms that a filter cannot judge
+(no valid date, no sender, unknown status) are listed in a note, never dropped silently. Ambiguous questions ("a
+certain hospital", a date without saying which date, "שם" without first / last) get a clarification with buttons.
+Results never show names, and the ID is masked to its last 3 digits; a click on a row opens the form for review.
+
+- **Rules first, no API call:** fixed rules understand the example questions and their usual variants.
+- **Claude only as a fallback,** for a question the rules do not fully understand: only the question text and the
+  closed list of approved sender names are sent (never a record), with a closed JSON schema at low effort (about one
+  cent per question on Opus), at most once per distinct question in a session. The answer is checked against
+  allowlists of intents, fields, statuses, senders, dates and limits before anything runs; the model never produces
+  code or SQL, and a question with 5+ digits (an ID or a number) is never sent.
+- `ARCHIVE_ASSISTANT=false` hides the assistant; `ARCHIVE_ASSISTANT_MODEL=false` keeps it rules-only.
+- Limitations: one sender, one empty field and one date range per question; no search by a value (use the free
+  search); a first name typed into a question cannot be detected and would reach the model if the rules fail.
+
 Privacy: uploads live only in the browser session's memory (`st.session_state`), never in a shared cache, a log
 or on disk; the pipeline's temp folder is deleted after every run. The one exception
 is the database above: it holds patient data on disk (git-ignored, local only), so keep the folder on an

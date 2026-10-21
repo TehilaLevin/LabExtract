@@ -224,6 +224,21 @@ def sender_counts(path=None, approved_only: bool = False) -> dict:
             f"SELECT sending_entity, COUNT(*) FROM forms {where}GROUP BY sending_entity", args)}
 
 
+def archive_rows(path=None) -> list:
+    """Every stored form as a plain dict, newest first, for the archive assistant (src/archive_assistant.py).
+
+    Keys: id, batch_id, form_index, status, open_flags (a dict), created_at, approved_at, then the field and
+    metadata columns. Read only; never record_json, edits or images.
+    """
+    sql = (f"SELECT id, batch_id, form_index, status, open_flags, created_at, approved_at, {', '.join(_COLUMNS)} "
+           "FROM forms ORDER BY created_at DESC, id DESC")
+    with closing(_connect(path)) as conn:
+        rows = [dict(r) for r in conn.execute(sql)]
+    for row in rows:
+        row["open_flags"] = json.loads(row["open_flags"] or "{}")
+    return rows
+
+
 def export_frame(stored: pd.DataFrame) -> tuple:
     """(DataFrame, highlight) for excel_exporter from a `search` result: same as the review export (one row per
     commitment; the database itself stays one row per form);

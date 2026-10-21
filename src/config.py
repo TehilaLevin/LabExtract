@@ -116,6 +116,12 @@ DB_PATH = DATA_DIR / "db" / "labextract.db"
 # Whether the database keeps images (field crops, and page previews of forms not yet approved). false: no image
 # is stored and saved forms open without images.
 DB_STORE_CROPS = _env_flag("DB_STORE_CROPS", True)
+# Archive assistant on the database screen (src/archive_assistant.py): questions in Hebrew about the stored
+# records. ARCHIVE_ASSISTANT=false hides it. Questions the fixed rules do not understand are sent to Claude
+# (question text only, never records) to be turned into a checked query; ARCHIVE_ASSISTANT_MODEL=false keeps
+# it rules-only (no API call at all).
+ARCHIVE_ASSISTANT_ENABLED = _env_flag("ARCHIVE_ASSISTANT", True)
+ARCHIVE_ASSISTANT_MODEL_ENABLED = _env_flag("ARCHIVE_ASSISTANT_MODEL", True)
 REFERENCE_DIR = DATA_DIR / "reference"
 SENDERS_PATH = REFERENCE_DIR / "approved_senders.json"
 NAMES_PATH = REFERENCE_DIR / "israeli_names.json"
