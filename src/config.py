@@ -64,6 +64,9 @@ def _env_flag(name: str, default: bool) -> bool:
 # Targeted re-read of flagged number fields from high-resolution crops (at most one extra
 # request per form). FIELD_REREAD=false turns it off, e.g. for a baseline evaluation run.
 FIELD_REREAD_ENABLED = _env_flag("FIELD_REREAD", True)
+# Name crops: enlarge small crops and send an extra "ink only" view (highlighter removed). Image processing
+# only - what the model reads is never changed afterwards. NAME_CROP_ENHANCE=false sends the plain crop.
+NAME_CROP_ENHANCE = _env_flag("NAME_CROP_ENHANCE", True)
 # Name suggestions checked against a dictionary of Israeli names (src/name_dictionary.py): a reading that is
 # not a known name is corrected only to the single known name reachable by look-alike letter edits. Changes
 # the unverified suggestion only, never an approved value. NAME_DICTIONARY=false turns it off.

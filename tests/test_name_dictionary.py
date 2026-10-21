@@ -108,3 +108,81 @@ def test_low_confidence_crop_reading_is_not_suggested():
     rec = rb.build_record(_form(), _hand(first=None, last=None, conf=0.3),
                           ee.NameCheck(needed=True, readings=[weak]), today=TODAY)
     assert rec.suggestions == {} and rec.flags["first_name"] == "name_unverified"
+
+
+# ---- name crop views: enlargement and ink-only (image processing only) ------------------------
+
+def _name_crop(width=600, height=120):
+    """White crop, yellow highlighter band, blue 'handwriting' strokes on it."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, height // 3, width, 2 * height // 3], fill=(250, 240, 90))
+    for x in range(40, width - 40, 60):
+        draw.line([(x, height // 4), (x + 30, 3 * height // 4)], fill=(20, 40, 160), width=6)
+    return img
+
+
+def test_small_crop_is_enlarged_and_large_one_kept():
+    small = ee.enlarge_name_crop(_name_crop(400, 120))
+    assert small.size == (1200, 360)                           # capped by NAME_CROP_MAX_UPSCALE (3x)
+    tall = ee.enlarge_name_crop(_name_crop(400, 300))
+    assert tall.height == ee.NAME_CROP_TARGET_HEIGHT           # enlarged to the target height
+    wide = ee.enlarge_name_crop(_name_crop(1500, 150))
+    assert max(wide.size) <= ee.NAME_CROP_MAX_SIDE             # never above the max side
+    big = _name_crop(1200, 500)
+    assert ee.enlarge_name_crop(big) is big                    # never shrinks here
+
+
+def test_ink_only_view_removes_highlighter():
+    views = ee.name_crop_views(_name_crop())
+    assert [label for label, _ in views] == [" - colour", " - ink only"]
+    ink = views[1][1].convert("L")
+    w, h = ink.size
+    band = [ink.getpixel((x, h // 2)) for x in range(0, 30)]   # highlighter only, left of the first stroke
+    assert min(band) > 200                                     # the yellow band became white
+
+
+def test_plain_crop_when_disabled(monkeypatch):
+    monkeypatch.setattr(config, "NAME_CROP_ENHANCE", False)
+    crop = _name_crop()
+    assert ee.name_crop_views(crop) == [("", crop)]
+
+
+def test_verify_names_sends_both_views_and_note(monkeypatch):
+    from PIL import Image
+
+    sent = {}
+    monkeypatch.setattr(ee, "generate_json", lambda contents, *a, **k: sent.setdefault("c", contents) and {"crops": []})
+    page = Image.new("RGB", (2000, 3000), "white")
+    page.paste(_name_crop(1600, 120), (200, 900))
+    ee.verify_names([page], _hand())
+    texts = [c for c in sent["c"] if isinstance(c, str)]
+    assert "Crop 1 - colour:" in texts and "Crop 1 - ink only:" in texts
+    assert ee.NAME_VIEWS_NOTE.strip() in texts[0]
+
+
+def test_disabled_views_keep_the_earlier_request(monkeypatch):
+    from PIL import Image
+
+    monkeypatch.setattr(config, "NAME_CROP_ENHANCE", False)
+    sent = {}
+    monkeypatch.setattr(ee, "generate_json", lambda contents, *a, **k: sent.setdefault("c", contents) and {"crops": []})
+    ee.verify_names([Image.new("RGB", (2000, 3000), "white")], _hand())
+    texts = [c for c in sent["c"] if isinstance(c, str)]
+    assert texts[1:] == ["Crop 1:"]                            # same labels as before: dev-cache keys unchanged
+    assert "Ignore yellow highlighter. Do not output anything except the JSON." in texts[0]
+
+
+def test_ink_view_keeps_green_and_blue_pen():
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (300, 100), "white")
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 30, 300, 70], fill=(250, 240, 90))                  # yellow highlighter
+    draw.line([(50, 20), (50, 80)], fill=(40, 140, 60), width=6)          # green pen (erased by ink_only)
+    draw.line([(150, 20), (150, 80)], fill=(20, 40, 160), width=6)        # blue pen
+    view = ee.ink_view(img)
+    assert view.getpixel((50, 50)) < 80 and view.getpixel((150, 50)) < 80  # both pens dark
+    assert view.getpixel((250, 50)) > 200                                  # highlighter gone

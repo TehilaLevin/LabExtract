@@ -490,7 +490,7 @@ def test_verify_names_with_fake_model(monkeypatch):
     ext = _hand(locations=[{"page": 1, "box_2d": [100, 100, 150, 900], "kind": "single_field"},
                            {"page": 1, "box_2d": [500, 100, 550, 900], "kind": "patient_sticker"}])
     check = ee.verify_names([Image.new("RGB", (1000, 1400), "white")], ext)
-    assert seen["crops"] == 2 and seen["purpose"] == "verify_names"
+    assert seen["crops"] == 4 and seen["purpose"] == "verify_names"  # 2 crops, each in colour + ink view
     assert [r.legible for r in check.readings] == [True, False]  # a missing answer counts as illegible
     assert check.readings[0].full_name == "ישראל ישראלי"
 

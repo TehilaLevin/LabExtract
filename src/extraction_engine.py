@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Optional, Union
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from src import config
 from src.constants import (
@@ -553,7 +553,7 @@ For EACH crop, independently:
 - legible = false only when the crop shows no name at all (empty, cut off entirely, covered); then the names are null.
 - uncertain_letters: how many letters of the name you are NOT sure about (0 = every letter is clear).
 - confidence: 0-1, how sure you are of every letter (any uncertain letter => below 0.8).
-Ignore yellow highlighter. Do not output anything except the JSON.
+Ignore yellow highlighter.{views_note} Do not output anything except the JSON.
 
 Form type reported by the full-page pass: {form_type}
 KNOWN NAME ORDERS (single-field names):
@@ -591,6 +591,14 @@ NAME_CROP_PAD_X = 0.35    # horizontal padding (fraction of box width): labels s
                           # model boxes can be too narrow (seen on sample page 9: name cut at the left)
 NAME_CROP_MIN_PAD_PX = 40
 NAME_CROP_MAX_SIDE = 1600
+# NAME_CROP_ENHANCE: small name crops are enlarged so the crop is at least NAME_CROP_TARGET_HEIGHT px high
+# (at most NAME_CROP_MAX_UPSCALE x, never above NAME_CROP_MAX_SIDE), and an "ink only" grey view (yellow
+# highlighter removed, pen ink dark - ink_view) is sent next to the colour crop. Image processing only:
+# the model's reading is not changed afterwards.
+NAME_CROP_TARGET_HEIGHT = 450
+NAME_CROP_MAX_UPSCALE = 3.0
+NAME_VIEWS_NOTE = (" Each crop comes twice: in colour, and as an 'ink only' grey view of the SAME crop (yellow "
+                   "highlighter removed, pen ink dark). Read both and give ONE answer per crop.")
 
 
 @dataclass
@@ -621,6 +629,31 @@ def needs_name_check(extraction: ExtractionResult) -> bool:
     if all(f.script == "printed" for f in names):
         return False
     return any(f.value for f in names) or bool(extraction.name_locations)
+
+
+def enlarge_name_crop(crop: Image.Image) -> Image.Image:
+    """Upscale a small name crop towards NAME_CROP_TARGET_HEIGHT (never shrinks; capped by max upscale and side)."""
+    factor = min(NAME_CROP_MAX_UPSCALE, NAME_CROP_TARGET_HEIGHT / max(1, crop.height),
+                 NAME_CROP_MAX_SIDE / max(crop.size))
+    if factor <= 1.0:
+        return crop
+    return crop.resize((round(crop.width * factor), round(crop.height * factor)), Image.LANCZOS)
+
+
+def ink_view(crop: Image.Image) -> Image.Image:
+    """Grey view of a name crop without yellow highlighter: the red channel, contrast-stretched. Yellow
+    highlighter and paper have high red (white); blue, green and black pen have low red (dark). Not
+    highlight_crops.ink_only: that mask is tuned for blue / black ink and erased green pen (seen on a form)."""
+    return ImageOps.autocontrast(crop.convert("RGB").getchannel("R"), cutoff=1)
+
+
+def name_crop_views(crop: Image.Image) -> list:
+    """[(label suffix, image)] sent for one name crop: the crop as is, or - with NAME_CROP_ENHANCE - the
+    enlarged colour crop plus its enlarged ink view (highlighter removed)."""
+    if not config.NAME_CROP_ENHANCE:
+        return [("", crop)]
+    big = enlarge_name_crop(crop)
+    return [(" - colour", big), (" - ink only", ink_view(big))]
 
 
 def crop_name_regions(images: list, locations: list) -> list:
@@ -659,9 +692,12 @@ def verify_names(images: list, extraction: ExtractionResult) -> NameCheck:
     if not crops:
         return NameCheck(needed=True, error="no name location to verify")
     name_rules = "\n".join(f"- {where} => {order}" for where, order in NAME_ORDER_CONVENTIONS)
-    contents: list = [NAME_CHECK_PROMPT.format(form_type=extraction.form_type, name_rules=name_rules)]
+    views_note = NAME_VIEWS_NOTE if config.NAME_CROP_ENHANCE else ""
+    contents: list = [NAME_CHECK_PROMPT.format(form_type=extraction.form_type, name_rules=name_rules,
+                                               views_note=views_note)]
     for i, (_, crop) in enumerate(crops, start=1):
-        contents += [f"Crop {i}:", image_part(crop, NAME_CROP_MAX_SIDE)]
+        for label, view in name_crop_views(crop):
+            contents += [f"Crop {i}{label}:", image_part(view, NAME_CROP_MAX_SIDE)]
     try:
         data = generate_json(contents, NAME_CHECK_SCHEMA, purpose="verify_names")
     except LLMQuotaError:

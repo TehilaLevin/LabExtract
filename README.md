@@ -26,6 +26,7 @@ extraction, name check, field re-read) goes through `src/claude_client.py`.
 | `CLAUDE_EFFORT` | `high` | `low` / `medium` / `high` / `xhigh` / `max`; orientation and splitting always run at `low` |
 | `NAME_CHECK_MODEL` | `CLAUDE_MODEL` | model for the handwritten-name crops only (small request); `claude-fable-5-1` is stronger but requires 30-day data retention at Anthropic |
 | `NAME_CHECK_EFFORT` | `CLAUDE_EFFORT` | effort for the name crops only |
+| `NAME_CROP_ENHANCE` | `true` | name crops: small ones enlarged, plus a grey view with the yellow highlighter removed (image processing only) |
 | `NAME_DICTIONARY` | `true` | correct name suggestions to a known Israeli name by look-alike letters (ז/צ, ר/ד, a dropped ו/י...) |
 | `BATCH_NAME_SHARING` | `false` | forms with the same valid ID share their names as a suggestion (off: the samples share one placeholder ID) |
 | `HIGHLIGHT_CROPS` | `true` | zoomed crops of highlighted regions sent with the page (see below) |

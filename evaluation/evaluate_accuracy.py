@@ -424,7 +424,7 @@ def labels_fingerprint(truth_rows: list) -> str:
 # Claude configuration of a run, recorded in the summary and printed by a comparison.
 CONFIG_KEYS = ("CLAUDE_MODEL", "CLAUDE_EFFORT", "HIGHLIGHT_CROPS_ENABLED", "STRICT_VALIDATION", "EVAL_MODE",
                "FIELD_REREAD_ENABLED", "CROP_SOURCE", "NAME_CHECK_MODEL", "NAME_CHECK_EFFORT", "NAME_DICTIONARY_ENABLED",
-               "BATCH_NAME_SHARING")
+               "BATCH_NAME_SHARING", "NAME_CROP_ENHANCE")
 
 
 def run_config() -> dict:
