@@ -216,13 +216,13 @@ DEV_CACHE=true EVAL_MODE=true .venv/Scripts/python evaluation/evaluate_accuracy.
 Live runs print tokens (incl. prompt-cache reads/writes), time and cost per stage and per form.
 
 No values are printed by default (`--show-values` prints non-personal fields only). The ground truth has only
-5 rows, so the results are preliminary.
+12 rows, so the results are preliminary.
 
 ### Labeling ground truth
 
 `data/ground_truth/labeling_worksheet.csv` lists every sample page with a *suggested* form type, tags, split and
 priority (no field values - verify every suggestion against the image). For each page you label, add a row to
-`data/ground_truth/ground_truth.csv`:
+`data/ground_truth/ground_truth_draft.csv`:
 
 - `page_numbers`: all pages of the form (`4,5` for a two-page form). List fields: numbers separated by `;`.
 - An empty cell means "this field is not on the form". `UNREADABLE` means "it is there, but a person cannot read

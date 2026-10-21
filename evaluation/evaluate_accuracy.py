@@ -1,4 +1,4 @@
-"""Compare engine output against data/ground_truth/ground_truth.csv, per field.
+"""Compare engine output against data/ground_truth/ground_truth_draft.csv, per field.
 
 Usage:
     .venv/Scripts/python evaluation/evaluate_accuracy.py [--ground-truth PATH] [--cache-only]
@@ -92,7 +92,7 @@ from src import config  # noqa: E402  - the evaluated engine's config
 if ENGINE_ROOT != ROOT:
     config.DEV_CACHE_DIR = DATA_DIR / "dev_cache"
 
-DEFAULT_GROUND_TRUTH = DATA_DIR / "ground_truth" / "ground_truth.csv"
+DEFAULT_GROUND_TRUTH = DATA_DIR / "ground_truth" / "ground_truth_draft.csv"
 SAMPLES_DIR = DATA_DIR / "samples"
 SENDERS_PATH = DATA_DIR / "reference" / "approved_senders.json"
 PERSONAL_FIELDS = frozenset({"first_name", "last_name", "id_number"})
