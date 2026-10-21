@@ -263,3 +263,17 @@ def test_cloud_secrets_reach_the_environment(monkeypatch):
     assert not at.exception
     assert os.environ["LABEXTRACT_TEST_SECRET"] == "from-secrets" and os.environ["LABEXTRACT_TEST_KEPT"] == "from-env"
     monkeypatch.delenv("LABEXTRACT_TEST_SECRET")
+
+
+def test_a_stopped_run_is_explained_on_the_summary():
+    """A rejected key / no credit leaves every form empty: the summary says why instead of just showing orange."""
+    failed = _record(1)
+    failed.error = "Claude API key rejected (401): check CLAUDE_API_KEY (.env, or Secrets on Streamlit Cloud)"
+    skipped = _record(2)
+    skipped.error = "API quota exhausted"
+    message = rs.stopped_run_message([failed, skipped, _record(3)])
+    assert "מפתח ה-API נדחה" in message and "2 מתוך 3" in message
+    assert rs.stopped_run_message([_record(1)]) is None
+    other = _record(4)
+    other.error = "Model returned invalid JSON (JSONDecodeError)"   # one bad form is not a stopped run
+    assert rs.stopped_run_message([other]) is None

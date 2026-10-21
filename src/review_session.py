@@ -203,3 +203,24 @@ def export_frame(reviews: list, with_form_index: bool = False) -> tuple:
         if not r.approved:
             highlight.add((pos, REVIEW_STATUS_KEY))
     return expand_per_commitment(pd.DataFrame(rows, columns=columns), highlight)
+
+
+# Error texts of claude_client.LLMQuotaError (and the placeholder of forms skipped after it): the run stopped
+# calling the model, so every form left is empty. Matched on the codes in the message, never on form content.
+QUOTA_MARKERS = {"(401)": "מפתח ה-API נדחה – בדקו את CLAUDE_API_KEY (בקובץ .env, או ב-Secrets בענן).",
+                 "(403)": "למפתח ה-API אין הרשאה לשירות.",
+                 "(404)": "שם המודל לא נמצא – בדקו את CLAUDE_MODEL.",
+                 "(429)": "חריגה ממגבלת הבקשות של השירות – נסו שוב בעוד כמה דקות.",
+                 "credit balance": "נגמר הקרדיט בחשבון ה-API – יש להוסיף קרדיט ב-Anthropic Console.",
+                 "quota exhausted": "השירות הפסיק לקבל בקשות במהלך הריצה."}
+
+
+def stopped_run_message(records: list):
+    """Hebrew banner when the run stopped calling the model (bad key, no credit, rate limit), else None."""
+    errors = [r.error for r in records if r.error]
+    for marker, text in QUOTA_MARKERS.items():
+        if any(marker in e for e in errors):
+            failed = len(errors)
+            return (f"**החילוץ האוטומטי נעצר:** {text} {failed} מתוך {len(records)} טפסים נשארו ריקים "
+                    "ומסומנים – אפשר להקליד אותם ידנית מתוך התמונה, או לתקן ולחלץ מחדש.")
+    return None

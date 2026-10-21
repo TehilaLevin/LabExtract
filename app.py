@@ -478,7 +478,10 @@ def run_extraction(files: list, progress_slot, steps_slot) -> None:
     st.session_state.batch_id = uuid.uuid4().hex
     persist(st.session_state.reviews)
     st.session_state.run_error = None
+    stopped = rs.stopped_run_message(outcome["records"])
     go("summary", 0)
+    if stopped:  # after go(): the notice is shown on the summary screen
+        st.session_state.notice_error = stopped
     st.rerun()
 
 

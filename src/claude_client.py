@@ -326,7 +326,7 @@ def call(contents: list, request: ModelRequest) -> ModelReply:
     except anthropic.RateLimitError:
         raise LLMQuotaError("Claude API rate limit (429) still exceeded after retries") from None
     except anthropic.AuthenticationError:
-        raise LLMQuotaError("Claude API key rejected (401): check CLAUDE_API_KEY in .env") from None
+        raise LLMQuotaError("Claude API key rejected (401): check CLAUDE_API_KEY (.env, or Secrets on Streamlit Cloud)") from None
     except anthropic.PermissionDeniedError:
         raise LLMQuotaError("Claude API key has no access (403)") from None
     except anthropic.NotFoundError:

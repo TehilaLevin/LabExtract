@@ -12,7 +12,7 @@ def _require(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value or value == "your_key_here":
         raise RuntimeError(
-            f"Missing {name}. Set it in the .env file (see .env.example)."
+            f"Missing {name}. Set it in the .env file (see .env.example), or in the app's Secrets on Streamlit Cloud."
         )
     return value
 
