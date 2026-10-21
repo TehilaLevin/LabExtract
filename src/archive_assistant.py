@@ -664,6 +664,13 @@ def _row_date(row: dict, date_field: str) -> Optional[date]:
         return None
 
 
+def _excluded(n: int, what: tuple, where: str, tail: tuple = ("", "")) -> str:
+    """Hebrew note on forms a filter could not judge, singular or plural. what / tail: (singular, plural)."""
+    if n == 1:
+        return f"טופס אחד {what[0]} לא נכלל{where}{tail[0]}"
+    return f"{n} טפסים {what[1]} לא נכללו{where}{tail[1]}"
+
+
 def run_query(query: Query, rows: list, senders_path=None) -> Answer:
     """Execute a checked query on stored rows (record_store.archive_rows(): newest first)."""
     check_query(query, list_approved_senders(senders_path or config.SENDERS_PATH))
@@ -675,18 +682,19 @@ def run_query(query: Query, rows: list, senders_path=None) -> Answer:
     if query.status:
         unknown = [r for r in matched if r["status"] not in STATUSES]
         if unknown:
-            notes.append(f"{len(unknown)} טפסים עם סטטוס לא ידוע לא נכללו בסינון לפי סטטוס.")
+            notes.append(_excluded(len(unknown), ("עם סטטוס לא ידוע",) * 2, " בסינון לפי סטטוס."))
         matched = [r for r in matched if r["status"] == query.status]
 
     if query.sender or query.sender_kind:
         empty = [r for r in matched if not (r["sending_entity"] or "").strip()]
         if empty:
-            notes.append(f"{len(empty)} טפסים בלי גורם שולח לא נכללו (ייתכן שחלקם שייכים לגורם המבוקש).")
+            notes.append(_excluded(len(empty), ("בלי גורם שולח",) * 2, "", (
+                " (ייתכן שהוא שייך לגורם המבוקש).", " (ייתכן שחלקם שייכים לגורם המבוקש).")))
         kinds = _kind_of(senders_path)
         listed = [r for r in matched if (r["sending_entity"] or "").strip()]
         off_list = [r for r in listed if r["sending_entity"] not in kinds]
         if off_list:
-            notes.append(f"{len(off_list)} טפסים עם גורם שולח שאינו ברשימה המאושרת לא נכללו.")
+            notes.append(_excluded(len(off_list), ("עם גורם שולח שאינו ברשימה המאושרת",) * 2, "."))
         if query.sender:
             wanted = {query.sender, *_campuses(query.sender, senders_path)}
             matched = [r for r in listed if r["sending_entity"] in wanted]
@@ -705,9 +713,9 @@ def run_query(query: Query, rows: list, senders_path=None) -> Answer:
             judged = [r for r in matched if r["status"] == record_store.STATUS_APPROVED]
         undated = [r for r in judged if _row_date(r, query.date_field) is None]
         if undated:
-            what = {"received_date": "ללא תאריך קבלה תקין", "created_at": "ללא תאריך קליטה",
-                    "approved_at": "מאושרים ללא תאריך אישור"}[query.date_field]
-            notes.append(f"{len(undated)} טפסים {what} לא נכללו בסינון לפי תאריך.")
+            what = {"received_date": ("ללא תאריך קבלה תקין",) * 2, "created_at": ("ללא תאריך קליטה",) * 2,
+                    "approved_at": ("מאושר ללא תאריך אישור", "מאושרים ללא תאריך אישור")}[query.date_field]
+            notes.append(_excluded(len(undated), what, " בסינון לפי תאריך."))
         matched = [r for r in judged
                    if (d := _row_date(r, query.date_field)) is not None and query.date_from <= d <= query.date_to]
 

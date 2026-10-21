@@ -239,6 +239,12 @@ def archive_rows(path=None) -> list:
     return rows
 
 
+def last_change(path=None) -> tuple:
+    """(number of stored forms, latest updated_at): changes whenever a form is saved, approved or deleted."""
+    with closing(_connect(path)) as conn:
+        return tuple(conn.execute("SELECT COUNT(*), MAX(updated_at) FROM forms").fetchone())
+
+
 def export_frame(stored: pd.DataFrame) -> tuple:
     """(DataFrame, highlight) for excel_exporter from a `search` result: same as the review export (one row per
     commitment; the database itself stays one row per form);

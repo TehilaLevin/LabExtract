@@ -27,18 +27,15 @@ import html
 import threading
 import uuid
 import time
+import urllib.parse
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-import altair as alt
-
-from src import achievements as achv
 from src import archive_assistant as aa
 from src import config
-from src import overview
 from src import record_store
 from src import review_session as rs
 from src.constants import (
@@ -81,6 +78,20 @@ EXPORT_WIDTHS = {"first_name": 70, "last_name": 72, "id_number": 96, "central_nu
                  "sending_entity": 68, "commitment_numbers": 80, "source_file": 150, "page_numbers": 62,
                  "form_type": 116, REVIEW_STATUS_KEY: 76}
 ASSETS = Path(__file__).resolve().parent / "assets"
+# The archive assistant's face (launcher button, chat header, chat messages): inline SVG, no file.
+BOT_FACE_SVG = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><defs><linearGradient id='f' x1='0' y1='0' "
+                "x2='1' y2='1'><stop offset='0' stop-color='#E6F6F1'/><stop offset='1' stop-color='#FBE6F1'/></linearGradient>"
+                "</defs><line x1='24' y1='6.5' x2='24' y2='12' stroke='#1B1A6B' stroke-width='2.2' stroke-linecap='round'/>"
+                "<circle cx='24' cy='5' r='2.8' fill='#C8306F'/><rect x='4' y='21' width='4.5' height='9' rx='2.2' "
+                "fill='#5BC0A8'/><rect x='39.5' y='21' width='4.5' height='9' rx='2.2' fill='#5BC0A8'/><rect x='8.5' "
+                "y='12' width='31' height='27' rx='12' fill='url(#f)' stroke='#1B1A6B' stroke-width='2.2'/><circle "
+                "cx='18.5' cy='24.5' r='3.1' fill='#1B1A6B'/><circle cx='29.5' cy='24.5' r='3.1' fill='#1B1A6B'/><circle "
+                "cx='19.6' cy='23.4' r='0.9' fill='#FFFFFF'/><circle cx='30.6' cy='23.4' r='0.9' fill='#FFFFFF'/><path "
+                "d='M18.5 31.5q5.5 4.5 11 0' fill='none' stroke='#C8306F' stroke-width='2.4' stroke-linecap='round'/></svg>")
+BOT_FACE_URI = "data:image/svg+xml," + urllib.parse.quote(BOT_FACE_SVG)
+# Ring colours of the assistant's round frame (soft teal -> blue -> lilac -> pink).
+BOT_RING = "conic-gradient(from 210deg, #5BC0A8, #8DB6EE, #B9A7F0, #E58CC0, #F3A6C8, #5BC0A8)"
+DEFAULT_DB_PATH = config.DATA_DIR / "db" / "labextract.db"
 
 
 def _data_uri(name: str) -> str:
@@ -292,15 +303,44 @@ div[class*="st-key-card"], .st-key-formimage, .st-key-downloadcard, .st-key-wait
     border-radius: 22px !important; box-shadow: 0 6px 22px rgba(27, 26, 107, 0.06); }}
 [data-testid="stBaseButton-secondary"] {{ border-color: #1B1A6B; color: #1B1A6B; }}
 .stApp button[data-testid^="stBaseButton-"]:not([data-testid="stBaseButton-tertiary"]) {{ border-radius: 999px !important; }}
-/* Archive assistant (database screen). */
-.st-key-assistant {{ background: #FFFFFF; border-radius: 22px !important; box-shadow: 0 6px 22px rgba(27, 26, 107, 0.06);
-    margin-bottom: 18px; }}
-.st-key-assistant_examples, .st-key-assistant_options {{ flex-wrap: wrap; gap: 6px; }}
-.st-key-assistant_examples button, .st-key-assistant_options button {{ min-height: 32px; padding: 2px 12px;
+/* Archive assistant: a floating button and a side chat panel, bottom-left (the sidebar is on the right). */
+.st-key-chatlauncher, .st-key-chatlauncher_open {{ position: fixed; left: max(20px, env(safe-area-inset-left, 0px));
+    bottom: 20px; z-index: 1000; width: auto !important; }}
+/* A round frame with a soft gradient ring; the bot face (closed) or a close mark (open) inside. */
+.st-key-chatlauncher button, .st-key-chatlauncher_open button {{ width: 68px; height: 68px; min-height: 68px; padding: 0;
+    border-radius: 50% !important; border: 3px solid transparent !important; color: #1B1A6B !important;
+    background: radial-gradient(circle at 30% 25%, #FFFFFF, #F4F1FF 60%, #FCEAF3) padding-box, {BOT_RING} border-box !important;
+    box-shadow: 0 10px 28px rgba(27, 26, 107, 0.25); transition: transform .15s ease; }}
+.st-key-chatlauncher button {{ background: url("{BOT_FACE_URI}") center / 42px no-repeat padding-box,
+    radial-gradient(circle at 30% 25%, #FFFFFF, #F4F1FF 60%, #FCEAF3) padding-box, {BOT_RING} border-box !important; }}
+.st-key-chatlauncher button:hover, .st-key-chatlauncher_open button:hover {{ transform: scale(1.06); }}
+.st-key-chatlauncher button p, .st-key-chatlauncher_open button p {{ font-size: 0; }}
+.st-key-chatlauncher_open button [data-testid="stIconMaterial"] {{ font-size: 30px; }}
+@media (prefers-reduced-motion: reduce) {{ .st-key-chatlauncher button, .st-key-chatlauncher_open button {{ transition: none; }} }}
+.lx-chat-head {{ display: flex; align-items: center; gap: 10px; }}
+.lx-bot {{ width: 46px; height: 46px; flex: none; border-radius: 50%; border: 3px solid transparent;
+    background: url("{BOT_FACE_URI}") center / 30px no-repeat padding-box,
+    radial-gradient(circle at 30% 25%, #FFFFFF, #F4F1FF 60%, #FCEAF3) padding-box, {BOT_RING} border-box; }}
+.lx-chat-source {{ font-size: 12px; line-height: 1.4; color: #1F8A73; margin-top: 2px; }}
+.lx-chat-source.alt {{ color: #9A5800; font-weight: 600; }}
+.lx-answer-source {{ font-size: 11px; color: #5F6E82; margin-top: 4px; }}
+.st-key-chatdock [data-testid="stChatMessage"] img {{ border-radius: 50%; padding: 2px; background: {BOT_RING}; }}
+.st-key-chatdock {{ position: fixed; left: max(20px, env(safe-area-inset-left, 0px)); bottom: 100px; z-index: 1000;
+    width: min(440px, calc(100vw - 40px)); max-height: calc(100vh - 124px); overflow-y: auto; background: #FFFFFF;
+    border-radius: 22px !important; box-shadow: 0 22px 60px rgba(27, 26, 107, 0.25); padding: 14px 14px 16px; }}
+.lx-chat-title {{ font-weight: 700; font-size: 18px; color: #1B1A6B; }}
+.lx-chat-foot {{ font-size: 11px; color: #5F6E82; line-height: 1.4; }}
+.st-key-chatdock [data-testid="stChatMessage"] {{ padding: 6px 4px; gap: 8px; }}
+.st-key-chatdock [data-testid="stChatInput"] textarea {{ unicode-bidi: plaintext; text-align: right; }}
+.st-key-chat_examples, [class*="st-key-chat_opts_"] {{ flex-wrap: wrap; gap: 6px; }}
+.st-key-chat_examples button, [class*="st-key-chat_opt_"] button {{ min-height: 30px; padding: 2px 12px;
     background: #FBEAF2; border-color: #F2C6DB; color: #1B1A6B; }}
-.st-key-assistant_examples button p, .st-key-assistant_options button p {{ font-size: 13px; }}
-.lx-answer {{ font-size: 20px; font-weight: 700; color: #1B1A6B; margin: 4px 0; }}
-.lx-chips {{ display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 2px 0 8px; }}
+.st-key-chat_examples button p, [class*="st-key-chat_opt_"] button p {{ font-size: 13px; }}
+[class*="st-key-chat_row_"] button {{ justify-content: flex-start; min-height: 34px; border-color: #DCE4EC; color: #2E3E55;
+    background: #F7F8FC; border-radius: 10px !important; }}
+[class*="st-key-chat_row_"] button p {{ font-size: 13px; }}
+.lx-answer {{ font-size: 16px; font-weight: 700; color: #1B1A6B; margin: 0 0 4px; }}
+.lx-chips {{ display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 2px 0 4px; }}
 .lx-chip.info {{ color: #1B1A6B; background: #ECEBF4; }}
 .lx-note {{ font-size: 13px; color: #9A5800; }}
 </style>
@@ -312,8 +352,8 @@ div[class*="st-key-card"], .st-key-formimage, .st-key-downloadcard, .st-key-wait
 def init_state() -> None:
     defaults = {"screen": "upload", "reviews": None, "pos": 0, "uploader_n": 0, "nonce": 0,
                 "pending": None, "notice": None, "run_error": None, "batch_id": None, "notice_error": None,
-                "toasts": [], "ach_unlocked": {}, "ach_processed": 0,
-                "assistant_pending": None, "assistant_result": None, "assistant_cache": {}}
+                "assistant_pending": None, "assistant_cache": {}, "chat": [], "chat_open": False,
+                "chat_refresh": None}
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
 
@@ -420,114 +460,9 @@ def run_extraction(files: list, progress_slot, steps_slot) -> None:
     st.session_state.reviews = rs.new_session(outcome["records"])
     st.session_state.batch_id = uuid.uuid4().hex
     persist(st.session_state.reviews)
-    award(new_forms=sum(1 for r in st.session_state.reviews if not r.record.error), batch_finished=True)
     st.session_state.run_error = None
     go("summary", 0)
     st.rerun()
-
-
-# ------------------------------------------------------------------ achievements
-
-def award(new_forms: int = 0, batch_finished: bool = False, hour=None) -> None:
-    """Re-check the achievements after an event and queue a toast for each one unlocked for the first time.
-
-    Unlocked ids are persisted (SQLite, or session_state when DB_ENABLED=false), so a rerun or a refresh
-    never announces one twice. A failure here never interrupts the review.
-    """
-    items = reviews()
-    try:
-        if config.DB_ENABLED:
-            total = achv.add_processed(new_forms) if new_forms else achv.processed_total()
-            counts = record_store.sender_counts()
-        else:
-            st.session_state.ach_processed += new_forms
-            total = st.session_state.ach_processed
-            counts = overview.counts_from_values(r.value("sending_entity") for r in items)
-        stats = achv.Stats(processed_total=total, batch_size=len(items),
-                           batch_approved=len(items) - len(rs.unapproved(items)), batch_finished=batch_finished,
-                           known_senders=overview.known_sender_count(overview.breakdown(counts)), hour=hour)
-        earned = achv.evaluate(stats)
-        if config.DB_ENABLED:
-            new = achv.unlock(earned)
-        else:
-            known = st.session_state.ach_unlocked
-            new = [a.id for a in achv.ACHIEVEMENTS if a.id in earned and a.id not in known]
-            known.update({i: "" for i in new})
-    except Exception:  # sqlite3.Error etc.: achievements are decoration, never block the work
-        return
-    st.session_state.toasts += new
-
-
-def show_toasts() -> None:
-    queued, st.session_state.toasts = st.session_state.toasts, []
-    for id_ in queued:
-        st.toast(f"הישג חדש: {achv.BY_ID[id_].title}", icon=":material/workspace_premium:")
-
-
-def achievements_panel() -> None:
-    try:
-        done = achv.unlocked() if config.DB_ENABLED else dict(st.session_state.ach_unlocked)
-    except Exception:
-        return
-    with st.expander(f"הישגים ({len(done)}/{len(achv.ACHIEVEMENTS)})", icon=":material/workspace_premium:"):
-        for a in achv.ACHIEVEMENTS:
-            if a.id in done:
-                when = f" · {done[a.id][:10]}" if done[a.id] else ""
-                st.markdown(f'<div style="margin-bottom:8px"><strong style="color:{APPROVED_COLOR}">✓ {a.title}</strong>'
-                            f'<div class="lx-muted">{a.description}{when}</div></div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div style="margin-bottom:8px;opacity:.55"><strong>{"הישג מוסתר" if a.hidden else a.title}'
-                            f'</strong><div class="lx-muted">{"???" if a.hidden else a.description}</div></div>',
-                            unsafe_allow_html=True)
-
-
-# ------------------------------------------------------------------ activity overview
-
-OVERVIEW_COLORS = {overview.KIND_LABELS[overview.KIND_HMO]: APPROVED_COLOR,
-                   overview.KIND_LABELS[overview.KIND_HOSPITAL]: "#7AA2F7",
-                   overview.KIND_LABELS[overview.KIND_OTHER]: "#93A0BC",
-                   overview.KIND_LABELS[overview.KIND_UNKNOWN]: "#5B6685"}
-
-
-def overview_section(counts: dict) -> None:
-    """Forms per sending entity, from the stored records: tiles by kind and a hover bar chart.
-
-    Hospitals have a city but no coordinates in the approved list, so this is a chart, not a map (no
-    location is guessed). Orange is not used: it is reserved for fields that need review.
-    """
-    st.markdown('<div class="lx-fields-head" style="margin-top:8px"><strong style="font-size:18px">'
-                'סקירת פעילות לפי גורם שולח (טפסים מאושרים)</strong></div>', unsafe_allow_html=True)
-    rows = overview.breakdown(counts)
-    if not rows:
-        st.markdown('<div class="lx-empty">עדיין אין נתונים להצגה.</div>', unsafe_allow_html=True)
-        return
-    kinds = overview.totals_by_kind(rows)
-    tiles = "".join(
-        f'<div class="lx-tile"><div class="lx-tile-label">{overview.KIND_LABELS[k]}</div>'
-        f'<div class="lx-tile-value">{kinds[k]["count"]}'
-        f'<span class="lx-muted" style="font-size:14px"> · {kinds[k]["percent"]}%</span></div></div>'
-        for k in overview.KIND_LABELS if kinds[k]["count"])
-    st.markdown(f'<div class="lx-tiles">{tiles}</div>', unsafe_allow_html=True)
-    frame = pd.DataFrame(rows)
-    total = int(frame["count"].sum())
-    st.markdown(f'<div class="lx-muted">סה״כ {total} טפסים מאושרים; האחוזים מחושבים מתוך סכום זה.</div>',
-                unsafe_allow_html=True)
-    hover = alt.selection_point(fields=["name"], on="pointerover", clear="pointerout")
-    base = alt.Chart(frame).encode(
-        y=alt.Y("name:N", sort="-x", title=None),
-        x=alt.X("count:Q", title="מספר טפסים", axis=alt.Axis(tickMinStep=1, format="d")))
-    bars = base.mark_bar(cornerRadiusEnd=4, size=16).encode(
-        color=alt.Color("kind_label:N", title="סוג",
-                        scale=alt.Scale(domain=list(OVERVIEW_COLORS), range=list(OVERVIEW_COLORS.values()))),
-        opacity=alt.condition(hover, alt.value(1), alt.value(0.6)),
-        tooltip=[alt.Tooltip("name:N", title="גורם"), alt.Tooltip("kind_label:N", title="סוג"),
-                 alt.Tooltip("count:Q", title="טפסים"), alt.Tooltip("percent:Q", title="אחוז מהסך", format=".1f")])
-    labels = base.mark_text(align="left", dx=4).encode(text=alt.Text("count:Q", format="d"))
-    chart = (bars + labels).add_params(hover).properties(height=max(120, 28 * len(frame)))
-    st.altair_chart(chart, width="stretch")
-    with st.expander("תצוגת טבלה"):
-        table = frame.rename(columns={"name": "גורם", "kind_label": "סוג", "count": "טפסים", "percent": "אחוז"})
-        st.dataframe(table[["גורם", "סוג", "טפסים", "אחוז"]], hide_index=True)
 
 
 # ------------------------------------------------------------------ screens
@@ -710,7 +645,6 @@ def _warning_lines(warnings: dict) -> str:
 
 
 def _after_approval(pos: int, empty: list) -> None:
-    award(hour=datetime.now().hour)
     items = reviews()
     note = f"טופס {pos + 1} אושר."
     if empty:
@@ -935,96 +869,171 @@ def open_stored(batch_id: str, form_index: int) -> None:
     go("review", next((i for i, r in enumerate(loaded) if r.form_index == form_index), 0))
 
 
-ASSISTANT_MAX_ROWS = 200  # rows drawn in the results table; the answer still counts all of them
+# ------------------------------------------------------------------ archive assistant (side chat)
+
+CHAT_MAX_ROWS = 6     # records listed as buttons under an answer; the full list is in the expandable table
+CHAT_HISTORY = 20     # exchanges kept in the conversation (this browser session's memory only)
+CHAT_TABLE_COLUMNS = ("id", "status", "sending_entity", "received_date", "central_numbers", "commitment_numbers")
 
 
 def _ask(question: str) -> None:
-    """Button callback: queue a question. It is interpreted in the script body, under a spinner."""
-    st.session_state.assistant_q = question
+    """Callback: queue a question. It is answered in the script body, under a spinner."""
+    st.session_state.chat_open = True
     st.session_state.assistant_pending = question
 
 
 def _ask_typed() -> None:
-    _ask(st.session_state.get("assistant_q", ""))
+    _ask(st.session_state.get("chat_input") or "")
 
 
-def archive_assistant_section(present_senders: list) -> None:
-    """Questions in Hebrew about the stored records (src/archive_assistant.py).
+def _toggle_chat() -> None:
+    st.session_state.chat_open = not st.session_state.chat_open
 
-    Fixed rules read the usual questions; Claude is asked only about a question they do not understand, with
-    the question text alone, at most once per distinct question (kept in session_state, so reruns never call
-    it again). The answer itself is always computed from the database rows, never by the model.
+
+def _clear_chat() -> None:
+    st.session_state.chat = []
+
+
+def _refresh_answer(i: int) -> None:
+    st.session_state.chat_refresh = i
+
+
+def _db_state():
+    """(form count, latest change) of the database, to tell whether an answer is still current."""
+    try:
+        return record_store.last_change()
+    except Exception:
+        return None
+
+
+def _source_line() -> str:
+    """Where the answers come from. A database other than the usual file (DB_PATH) is named in orange."""
+    state = _db_state()
+    count = f" · {state[0]} טפסים" if state else ""
+    if Path(config.DB_PATH).resolve() != DEFAULT_DB_PATH.resolve():
+        return (f'<div class="lx-chat-source alt">⚠ מאגר חלופי: {html.escape(Path(config.DB_PATH).name)}{count}'
+                '</div>')
+    return f'<div class="lx-chat-source">מקור הנתונים: מאגר הרשומות במחשב הזה{count}</div>'
+
+
+def _answer_question(question: str) -> dict:
+    """One exchange: the interpretation (kept when it came from the model, so asking again never calls it
+    twice) and, for a query, the answer computed from the database at the moment of asking."""
+    key = " ".join(question.split())
+    entry = {"question": key, "result": None, "answer": None, "error": None, "asked_at": datetime.now(),
+             "total": 0, "db_state": _db_state()}
+    try:
+        result = st.session_state.assistant_cache.get(key)
+        if result is None:
+            result = aa.interpret(question, present_senders=record_store.senders())
+            if getattr(result, "source", "") == "model":
+                st.session_state.assistant_cache[key] = result
+        entry["result"] = result
+        if isinstance(result, aa.Query):
+            rows = record_store.archive_rows()
+            entry["answer"], entry["total"] = aa.run_query(result, rows), len(rows)
+    except Exception as exc:  # sqlite3.Error etc.; model errors are already a Clarification
+        entry["error"] = f"החיפוש במאגר נכשל ({type(exc).__name__})."
+    return entry
+
+
+def chat_dock() -> None:
+    """The archive assistant as a side chat, on every screen (src/archive_assistant.py).
+
+    A floating button in the bottom-left corner (the sidebar is on the right in RTL) opens a chat panel; both are
+    ordinary Streamlit containers pinned with CSS on their key classes. Fixed rules read the usual questions;
+    Claude is asked only about a question they do not understand, with the question text alone. Every answer
+    is computed from the database rows, never by the model. The conversation lives in session_state only.
     """
-    with st.container(border=True, key="assistant"):
-        st.markdown('<div class="lx-fields-head"><strong style="font-size:18px">עוזר המאגר</strong>'
-                    '<span class="lx-muted">שאלה בעברית · התשובה מחושבת מהרשומות השמורות</span></div>',
-                    unsafe_allow_html=True)
-        with st.container(horizontal=True, key="assistant_examples"):
-            for i, example in enumerate(aa.EXAMPLES):
-                st.button(example, key=f"ask_ex_{i}", on_click=_ask, args=(example,))
-        with st.form("assistant_form", border=False):
-            text_col, button_col = st.columns([5, 1], vertical_alignment="bottom")  # RTL: the input on the right
-            text_col.text_input("שאלה", key="assistant_q", max_chars=aa.MAX_QUESTION_CHARS,
-                                placeholder="למשל: כמה טפסים ממכבי ממתינים לבדיקה?", label_visibility="collapsed")
-            button_col.form_submit_button("שאל", type="primary", on_click=_ask_typed, icon=":material/search:",
-                                          width="stretch")
-        st.markdown('<span class="lx-muted">שאלות שהכללים הקבועים לא מבינים נשלחות ל-Claude כטקסט בלבד, בלי רשומות. '
-                    'אל תקלידו שמות או מספרי זהות.</span>', unsafe_allow_html=True)
+    is_open = st.session_state.chat_open
+    with st.container(key="chatlauncher_open" if is_open else "chatlauncher"):  # the key class sets the look
+        st.button("סגירת העוזר" if is_open else "עוזר המאגר", key="chat_toggle", on_click=_toggle_chat, type="tertiary",
+                  icon=":material/close:" if is_open else None)
+    if not is_open:
+        return
+    with st.container(border=True, key="chatdock"):
+        head_col, clear_col = st.columns([5, 1], vertical_alignment="center")  # RTL: the title on the right
+        head_col.markdown('<div class="lx-chat-head"><span class="lx-bot"></span><div>'
+                          '<div class="lx-chat-title">עוזר המאגר</div>'
+                          '<div class="lx-muted">שאלה בעברית · התשובה מחושבת מהרשומות השמורות</div>'
+                          f'{_source_line()}</div></div>', unsafe_allow_html=True)
+        clear_col.button("ניקוי", key="chat_clear", on_click=_clear_chat, type="tertiary", icon=":material/refresh:",
+                         disabled=not st.session_state.chat)
+        if not config.DB_ENABLED:
+            st.info("המאגר כבוי (DB_ENABLED=false), אין רשומות לשאול עליהן.")
+            return
 
+        refresh = st.session_state.chat_refresh
+        if refresh is not None and refresh < len(st.session_state.chat):
+            st.session_state.chat_refresh = None
+            with st.spinner("מחשב מחדש מהמאגר…"):
+                st.session_state.chat[refresh] = _answer_question(st.session_state.chat[refresh]["question"])
         question = st.session_state.assistant_pending
         if question is not None:
             st.session_state.assistant_pending = None
-            key = " ".join(question.split())
-            result = st.session_state.assistant_cache.get(key)
-            if result is None:
-                with st.spinner("מפרש את השאלה…"):
-                    result = aa.interpret(question, present_senders=present_senders)
-                if getattr(result, "source", "") == "model":  # rules are free to rerun; model answers are not
-                    st.session_state.assistant_cache[key] = result
-            st.session_state.assistant_result = result
-        if st.session_state.assistant_result is not None:
-            _assistant_answer(st.session_state.assistant_result)
+            with st.spinner("מחפש במאגר…"):
+                st.session_state.chat = (st.session_state.chat + [_answer_question(question)])[-CHAT_HISTORY:]
+
+        with st.container(height=430, border=False, autoscroll=True, key="chatlog"):
+            with st.chat_message("assistant", avatar=BOT_FACE_SVG):
+                st.markdown("שלום! אפשר לשאול אותי על הטפסים השמורים במאגר. למשל:")
+                with st.container(horizontal=True, key="chat_examples"):
+                    for i, example in enumerate(aa.EXAMPLES):
+                        st.button(example, key=f"ask_ex_{i}", on_click=_ask, args=(example,))
+            current = _db_state()
+            for i, entry in enumerate(st.session_state.chat):
+                with st.chat_message("user", avatar=":material/person:"):
+                    st.markdown(html.escape(entry["question"]))
+                with st.chat_message("assistant", avatar=BOT_FACE_SVG):
+                    _chat_answer(entry, i, stale=entry["answer"] is not None and entry["db_state"] != current)
+        st.chat_input("שאלו על הטפסים השמורים…", key="chat_input", on_submit=_ask_typed,
+                      max_chars=aa.MAX_QUESTION_CHARS)
+        st.markdown('<div class="lx-chat-foot">רק שאלה שהכללים לא הבינו נשלחת ל-Claude, כטקסט בלבד. '
+                    'בלי שמות ומספרי זהות.</div>', unsafe_allow_html=True)
 
 
-def _assistant_answer(result) -> None:
+def _chat_answer(entry: dict, i: int, stale: bool = False) -> None:
+    result, answer = entry["result"], entry["answer"]
+    if entry["error"]:
+        st.error(entry["error"])
+        return
     if isinstance(result, aa.Clarification):
-        st.info(result.message, icon=":material/help:")
+        st.markdown(html.escape(result.message))
         if result.options:
-            with st.container(horizontal=True, key="assistant_options"):
-                for i, (label, question) in enumerate(result.options):
-                    st.button(label, key=f"ask_opt_{i}", on_click=_ask, args=(question,))
+            with st.container(horizontal=True, key=f"chat_opts_{i}"):
+                for j, (label, question) in enumerate(result.options):
+                    st.button(label, key=f"chat_opt_{i}_{j}", on_click=_ask, args=(question,))
         return
-    try:  # re-run on every render: the answer always reflects the database as it is now
-        answer = aa.run_query(result, record_store.archive_rows())
-    except Exception as exc:
-        st.error(f"החיפוש במאגר נכשל ({type(exc).__name__}).")
-        return
-    origin = ("פוענח בעזרת Claude – ודאו שהפירוש מתאים לשאלה" if result.source == "model"
-              else "פוענח לפי כללים קבועים")
+    origin = "פוענח בעזרת Claude – ודאו שהפירוש נכון" if result.source == "model" else "פוענח לפי כללים קבועים"
     chips = "".join(f'<span class="lx-chip info">{html.escape(c)}</span>' for c in aa.describe(result))
     st.markdown(f'<div class="lx-answer">{html.escape(answer.message)}</div>'
-                f'<div class="lx-chips"><span class="lx-muted">הבנתי:</span>{chips}'
-                f'<span class="lx-muted">· {origin}</span></div>'
-                + "".join(f'<div class="lx-note">⚠ {html.escape(n)}</div>' for n in answer.notes),
-                unsafe_allow_html=True)
+                f'<div class="lx-chips">{chips}</div><div class="lx-muted">{origin}</div>'
+                + "".join(f'<div class="lx-note">⚠ {html.escape(n)}</div>' for n in answer.notes)
+                + f'<div class="lx-answer-source">חושב מ-{entry["total"]} הטפסים שבמאגר · נכון ל-'
+                  f'{entry["asked_at"]:%H:%M}</div>', unsafe_allow_html=True)
+    if stale:
+        st.markdown('<div class="lx-note">⟳ המאגר השתנה מאז שהתשובה חושבה.</div>', unsafe_allow_html=True)
+        st.button("חישוב מחדש", key=f"chat_refresh_{i}", on_click=_refresh_answer, args=(i,), icon=":material/refresh:")
     if answer.groups:
         table = pd.DataFrame(answer.groups).rename(columns={"label": aa.GROUP_LABELS[result.group_by],
                                                             "count": "טפסים", "percent": "אחוז"})
         st.dataframe(_rtl_columns(table), hide_index=True)
         return
-    if not answer.rows:
-        return
-    shown = answer.rows[:ASSISTANT_MAX_ROWS]
-    view = _rtl_columns(pd.DataFrame(aa.display_rows(aa.Answer(answer.message, answer.count, rows=shown))))
-    st.markdown('<span class="lx-muted">לחצו על שורה כדי לפתוח את הטופס במסך הסקירה · שמות לא מוצגים ות״ז מוסתרת'
-                + (f" · מוצגות {len(shown)} השורות הראשונות" if len(shown) < len(answer.rows) else "")
-                + "</span>", unsafe_allow_html=True)
-    event = st.dataframe(view, hide_index=True, on_select="rerun", selection_mode="single-row",
-                         key=f"assistant_rows_{st.session_state.nonce}")
-    if event.selection.rows:
-        row = shown[event.selection.rows[0]]
-        open_stored(row["batch_id"], int(row["form_index"]))
-        st.rerun()
+    for row in answer.rows[:CHAT_MAX_ROWS]:  # no names, no ID: record number, sender and received date only
+        label = (f"רשומה {row['id']} · {row['sending_entity'] or 'ללא גורם שולח'} · "
+                 f"{row['received_date'] or 'ללא תאריך קבלה'}")
+        st.button(label, key=f"chat_row_{i}_{row['id']}", on_click=open_stored,
+                  args=(row["batch_id"], int(row["form_index"])), icon=":material/open_in_new:", width="stretch")
+    if len(answer.rows) > CHAT_MAX_ROWS:
+        with st.expander(f"כל {len(answer.rows)} התוצאות בטבלה"):
+            columns = [aa.RESULT_HEADERS[k] for k in CHAT_TABLE_COLUMNS]
+            event = st.dataframe(_rtl_columns(pd.DataFrame(aa.display_rows(answer))[columns]), hide_index=True,
+                                 on_select="rerun", selection_mode="single-row",
+                                 key=f"chat_table_{i}_{st.session_state.nonce}")
+            if event.selection.rows:
+                row = answer.rows[event.selection.rows[0]]
+                open_stored(row["batch_id"], int(row["form_index"]))
+                st.rerun()
 
 
 def screen_database() -> None:
@@ -1046,14 +1055,6 @@ def screen_database() -> None:
   <div class="lx-tile ok"><div class="lx-tile-label">אושרו</div><div class="lx-tile-value">{total["approved"]}</div></div>
   <div class="lx-tile flag"><div class="lx-tile-label">ממתינים</div><div class="lx-tile-value">{total["pending"]}</div></div>
 </div>""", unsafe_allow_html=True)
-
-    if config.ARCHIVE_ASSISTANT_ENABLED:
-        archive_assistant_section(known_senders)
-
-    try:
-        overview_section(record_store.sender_counts(approved_only=True))
-    except Exception as exc:
-        st.warning(f"הסקירה לא זמינה ({type(exc).__name__}).")
 
     text_col, status_col, sender_col = st.columns([3, 2, 2])
     text = text_col.text_input("חיפוש חופשי", placeholder="שם, ת״ז, מספר מרכזי, מספר התחייבות…", key="db_text")
@@ -1150,7 +1151,6 @@ def sidebar(has_results: bool) -> None:
         for screen, label in SCREENS.items():
             st.button(label, key=f"nav_{screen}", type="tertiary", disabled=not has_results and screen not in ("upload", "database"),
                       on_click=go, args=(screen,), width="stretch")
-        achievements_panel()
         approved = len(items) - len(rs.unapproved(items))
         st.markdown(f'<div class="lx-section" style="display:flex;justify-content:space-between">'
                     f'<span>טפסים שהועלו</span><span dir="ltr">{approved} / {len(items)}</span></div>'
@@ -1180,7 +1180,6 @@ def main() -> None:
         st.session_state.screen = "upload"
     sidebar(has_results)
 
-    show_toasts()
     if st.session_state.notice:
         st.success(st.session_state.notice)
         st.session_state.notice = None
@@ -1201,6 +1200,8 @@ def main() -> None:
     else:
         screen_upload()
     st.markdown(PARTNER_HTML, unsafe_allow_html=True)  # page footer on every screen
+    if config.ARCHIVE_ASSISTANT_ENABLED:
+        chat_dock()
 
 
 main()

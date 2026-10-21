@@ -113,9 +113,10 @@ measured on the samples may not carry over.
    images, "מחק תמונות בלבד" deletes every image and keeps the values, and "מחק את כל המאגר" deletes everything; each
    needs a confirmation. Limitations: **nothing is deleted automatically**, and the file is **not encrypted at rest**.
 
-### Archive assistant (database screen)
+### Archive assistant (side chat)
 
-"עוזר המאגר" answers questions in Hebrew about the stored records (`src/archive_assistant.py`), e.g. "כמה טפסים
+"עוזר המאגר" is a side chat on every screen: a floating button in the bottom-left corner opens a chat panel that
+answers questions in Hebrew about the stored records (`src/archive_assistant.py`), e.g. "כמה טפסים
 ממתינים לבדיקה?", "הצג טפסים ממכבי שממתינים לבדיקה", "אילו טפסים חסר בהם מספר התחייבות?", "כמה טפסים התקבלו היום?",
 "כמה טפסים מכל גורם שולח?". A question becomes a small, closed query: count / list / breakdown, filtered by review
 status, one approved sender (with its campuses) or health funds / hospitals, one empty field, open flags, and one
@@ -123,7 +124,8 @@ date range on the received date ("התקבל" stamp), the intake date or the app
 app's own status `pending`. The query runs in Python on `record_store.archive_rows()`; forms that a filter cannot judge
 (no valid date, no sender, unknown status) are listed in a note, never dropped silently. Ambiguous questions ("a
 certain hospital", a date without saying which date, "שם" without first / last) get a clarification with buttons.
-Results never show names, and the ID is masked to its last 3 digits; a click on a row opens the form for review.
+Results never show names, and the ID is masked to its last 3 digits; a click on a result opens the form on the review
+screen while the chat stays open beside it. The conversation lives in the browser session's memory only.
 
 - **Rules first, no API call:** fixed rules understand the example questions and their usual variants.
 - **Claude only as a fallback,** for a question the rules do not fully understand: only the question text and the

@@ -288,45 +288,84 @@ def test_example_questions_are_all_answered_by_the_rules():
         assert result is not None and leftovers == [], question
 
 
-# ------------------------------------------------------------------ app section (no model calls)
+# ------------------------------------------------------------------ side chat in the app (no model calls)
 
 @pytest.fixture
 def no_model_calls(monkeypatch):
     monkeypatch.setattr(ee, "generate_json", _no_model)
 
 
-def _database_app():
+def _app(screen="database"):
     at = AppTest.from_file(APP, default_timeout=30)
-    at.session_state["screen"] = "database"
+    at.session_state["screen"] = screen
     return at.run()
 
 
-def test_app_example_question_answers_from_the_database(no_model_calls):
+def _text(at):
+    return " ".join(m.value for m in at.markdown)
+
+
+def test_chat_button_is_on_every_screen_and_opens_the_panel(no_model_calls):
+    at = _app("upload")
+    assert not at.exception and at.button(key="chat_toggle").label == "עוזר המאגר"
+    assert not at.chat_input  # closed by default
+    at.button(key="chat_toggle").click().run()
+    assert not at.exception and at.chat_input and at.button(key="chat_toggle").label == "סגירת העוזר"
+
+
+def test_chat_example_answers_from_the_database_and_opens_a_record(no_model_calls):
     _store(_review(1), _review(2), _review(3, approved=True))
-    at = _database_app()
-    assert not at.exception
+    at = _app()
+    at.button(key="chat_toggle").click().run()
     at.button(key="ask_ex_0").click().run()
-    assert not at.exception
-    text = " ".join(m.value for m in at.markdown)
-    assert "נמצאו 2 טפסים התואמים לשאלה." in text and "ממתין לאישור" in text
-    results = at.dataframe[0].value  # the assistant's table comes first on the screen
-    assert len(results) == 2 and "רשומה" in results.columns
-    assert VALID_ID not in results.to_string() and "ישראל" not in results.to_string()
+    assert not at.exception and "נמצאו 2 טפסים התואמים לשאלה." in _text(at)
+    rows = [b for b in at.button if (b.key or "").startswith("chat_row_0_")]
+    assert len(rows) == 2 and all(VALID_ID not in b.label and "ישראל" not in b.label for b in rows)
+    rows[0].click().run()
+    assert not at.exception and at.session_state["screen"] == "review"
+    assert at.button(key="chat_toggle").label == "סגירת העוזר"  # the chat stays open beside the review
 
 
-def test_app_clarification_options_and_typed_question(no_model_calls):
+def test_chat_clarification_buttons_and_typed_question(no_model_calls):
     _store(_review(1, "שיבא"), _review(2, "מכבי"))
-    at = _database_app()
+    at = _app()
+    at.button(key="chat_toggle").click().run()
     at.button(key="ask_ex_4").click().run()  # "a certain hospital"
-    assert at.info and at.button(key="ask_opt_0").label == "שיבא"
-    at.button(key="ask_opt_0").click().run()
-    assert "נמצא טופס אחד התואם לשאלה." in " ".join(m.value for m in at.markdown)
-    at.text_input(key="assistant_q").input("כמה טפסים מכל גורם שולח?")
-    at.button[[b.key for b in at.button].index("FormSubmitter:assistant_form-שאל")].click().run()
-    assert not at.exception and "בחלוקה ל-2 קבוצות" in " ".join(m.value for m in at.markdown)
+    assert at.button(key="chat_opt_0_0").label == "שיבא"
+    at.button(key="chat_opt_0_0").click().run()
+    assert "נמצא טופס אחד התואם לשאלה." in _text(at)
+    at.chat_input(key="chat_input").set_value("כמה טפסים מכל גורם שולח?").run()
+    assert not at.exception and "בחלוקה ל-2 קבוצות" in _text(at) and len(at.session_state["chat"]) == 3
+    at.button(key="chat_clear").click().run()
+    assert at.session_state["chat"] == []
 
 
-def test_app_assistant_can_be_turned_off(monkeypatch, no_model_calls):
+def test_chat_can_be_turned_off(monkeypatch, no_model_calls):
     monkeypatch.setattr(config, "ARCHIVE_ASSISTANT_ENABLED", False)
-    at = _database_app()
-    assert not at.exception and not [b for b in at.button if (b.key or "").startswith("ask_ex_")]
+    at = _app()
+    assert not at.exception and "chat_toggle" not in [b.key for b in at.button]
+
+
+def test_chat_names_its_data_source_and_recomputes_after_a_change(no_model_calls):
+    _store(_review(1), _review(2))
+    at = _app()
+    at.button(key="chat_toggle").click().run()
+    assert "מאגר חלופי: test.db · 2 טפסים" in _text(at)  # the tests' DB_PATH is not the usual database file
+    at.button(key="ask_ex_0").click().run()
+    assert "נמצאו 2 טפסים התואמים לשאלה." in _text(at) and "חושב מ-2 הטפסים שבמאגר" in _text(at)
+    assert "chat_refresh_0" not in [b.key for b in at.button]
+    store.save_all([_review(3)], "b2")  # the database changes after the answer was computed
+    at.run()
+    assert "המאגר השתנה מאז" in _text(at)
+    at.button(key="chat_refresh_0").click().run()
+    assert "נמצאו 3 טפסים התואמים לשאלה." in _text(at) and "chat_refresh_0" not in [b.key for b in at.button]
+
+
+def test_last_change_moves_on_save_and_delete():
+    empty = store.last_change()
+    assert empty == (0, None)
+    _store(_review(1))
+    saved = store.last_change()
+    assert saved[0] == 1 and saved[1]
+    store.delete_all()
+    assert store.last_change() == (0, None)

@@ -61,11 +61,6 @@ def totals_by_kind(rows: list) -> dict:
     return out
 
 
-def known_sender_count(rows: list) -> int:
-    """Distinct entities on the approved list (used by the achievements)."""
-    return sum(1 for r in rows if r["kind"] in (KIND_HMO, KIND_HOSPITAL))
-
-
 def counts_from_values(values) -> dict:
     """{sender: count} from a list of sender strings (the session fallback when the database is off)."""
     out: dict = {}
