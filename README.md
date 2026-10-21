@@ -6,7 +6,7 @@ and turns them into structured records. Every field it is not sure of is marked 
 
 **Live demo:** [labextract-3qetzizcdmhmusfcfibefj.streamlit.app](https://labextract-3qetzizcdmhmusfcfibefj.streamlit.app/)
 
-![Results on the 12 sample forms: 53 of 84 fields correct, the rest left empty and flagged, 0 wrong values without a flag](docs/results.svg)
+![LabExtract in five steps: upload, split and identify, read, verify, review and store. Uncertain fields are left empty and flagged, never guessed.](docs/how-it-works.svg)
 
 ## What it does
 

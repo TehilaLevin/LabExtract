@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="330" viewBox="0 0 880 330" role="img" aria-label="LabExtract in five steps: upload, split and identify, read, verify, review and store. Uncertain fields are left empty and flagged, never guessed.">
+<rect x="0.5" y="0.5" width="879" height="329" rx="16" fill="#FFFFFF" stroke="#E3E2EE"/>
+<text x="32.0" y="46.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#1B1A6B" text-anchor="start">From a pile of forms to verified records</text>
+<text x="32.0" y="70.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" fill="#5F6E82" text-anchor="start">Each step is checked before the next. What the engine is not sure of goes to a person.</text>
+<rect x="32.0" y="92" width="145.6" height="132" rx="14" fill="#F7F6FB" stroke="#E3E2EE"/>
+<circle cx="60.0" cy="122" r="14" fill="#FBEAF2"/>
+<text x="60.0" y="127.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#C8306F" text-anchor="middle">1</text>
+<text x="48.0" y="166.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1B1A6B" text-anchor="start">Upload</text>
+<text x="48.0" y="190.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">PDFs, scans and</text>
+<text x="48.0" y="207.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">phone photos, in bulk</text>
+<path d="M185.6,152.0 l6,6 l-6,6" fill="none" stroke="#C8306F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="199.6" y="92" width="145.6" height="132" rx="14" fill="#F7F6FB" stroke="#E3E2EE"/>
+<circle cx="227.6" cy="122" r="14" fill="#FBEAF2"/>
+<text x="227.6" y="127.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#C8306F" text-anchor="middle">2</text>
+<text x="215.6" y="166.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1B1A6B" text-anchor="start">Split &amp; identify</text>
+<text x="215.6" y="190.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">Where each form starts,</text>
+<text x="215.6" y="207.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">which fund or hospital</text>
+<path d="M353.2,152.0 l6,6 l-6,6" fill="none" stroke="#C8306F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="367.2" y="92" width="145.6" height="132" rx="14" fill="#F7F6FB" stroke="#E3E2EE"/>
+<circle cx="395.2" cy="122" r="14" fill="#FBEAF2"/>
+<text x="395.2" y="127.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#C8306F" text-anchor="middle">3</text>
+<text x="383.2" y="166.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1B1A6B" text-anchor="start">Read</text>
+<text x="383.2" y="190.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">7 fields, each with</text>
+<text x="383.2" y="207.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">a confidence score</text>
+<path d="M520.8,152.0 l6,6 l-6,6" fill="none" stroke="#C8306F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="534.8" y="92" width="145.6" height="132" rx="14" fill="#F7F6FB" stroke="#E3E2EE"/>
+<circle cx="562.8" cy="122" r="14" fill="#FBEAF2"/>
+<text x="562.8" y="127.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#C8306F" text-anchor="middle">4</text>
+<text x="550.8" y="166.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1B1A6B" text-anchor="start">Verify</text>
+<text x="550.8" y="190.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">ID check digit, dates,</text>
+<text x="550.8" y="207.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">approved senders only</text>
+<path d="M688.4,152.0 l6,6 l-6,6" fill="none" stroke="#C8306F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="702.4" y="92" width="145.6" height="132" rx="14" fill="#F7F6FB" stroke="#E3E2EE"/>
+<circle cx="730.4" cy="122" r="14" fill="#FBEAF2"/>
+<text x="730.4" y="127.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#C8306F" text-anchor="middle">5</text>
+<text x="718.4" y="166.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1B1A6B" text-anchor="start">Review &amp; store</text>
+<text x="718.4" y="190.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">Crop beside each field,</text>
+<text x="718.4" y="207.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">approve, search later</text>
+<rect x="32" y="256" width="196" height="30" rx="15" fill="#E2F4EF"/>
+<circle cx="50" cy="271" r="5" fill="#00977A"/>
+<text x="62.0" y="276.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1B1A6B" text-anchor="start">Sure: the value is filled in</text>
+<rect x="242" y="256" width="318" height="30" rx="15" fill="#FFF1DC"/>
+<circle cx="260" cy="271" r="5" fill="#D97706"/>
+<text x="272.0" y="276.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1B1A6B" text-anchor="start">Not sure: left empty and flagged in orange</text>
+<text x="848.0" y="276.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1B1A6B" text-anchor="end">Nothing is guessed.</text>
+<text x="32.0" y="316.0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#5F6E82" text-anchor="start">On the sample forms, no wrong value passed without a flag.</text>
+</svg>

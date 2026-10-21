@@ -184,7 +184,8 @@ div[class*="st-key-cardflag_"] {{
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%23C8306F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21V7M10 12l6-6 6 6'/%3E%3Cpath d='M6 20v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E");
 }}
 [data-testid="stFileUploaderDropzone"]::before {{ order: -2; }}
-[data-testid="stFileUploaderDropzoneInstructions"] {{ order: -1; }}
+[data-testid="stFileUploaderDropzoneInstructions"], [data-testid="stFileUploaderDropzoneInstructions"] > div {{
+    order: -1; text-align: center; }}
 [data-testid="stFileUploaderDropzoneInstructions"] span {{ font-size: 0; }}
 [data-testid="stFileUploaderDropzoneInstructions"] > div::before {{
     content: "גררו קבצים לכאן"; display: block; font-size: 20px; font-weight: 600; color: #1B1A6B;
