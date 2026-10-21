@@ -1,7 +1,7 @@
-# LabExtract runs on patient data: serve on this computer only and send no usage statistics.
-# To let other lab computers connect, change server.address deliberately (and only on a trusted network).
+# LabExtract runs on patient data: send no usage statistics. The listening address is not set here, because a
+# cloud host must reach the app: on a lab computer start it with --server.address localhost (see README) so only
+# this computer can connect.
 [server]
-address = "localhost"
 maxUploadSize = 500
 
 [browser]

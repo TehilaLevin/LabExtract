@@ -247,3 +247,19 @@ def test_opening_a_record_saved_without_images_shows_a_notice(monkeypatch):
     at.run()
     assert not at.exception
     assert any("בלי תמונות" in w.value for w in at.warning)
+
+
+def test_cloud_secrets_reach_the_environment(monkeypatch):
+    """Streamlit Community Cloud passes the API key as a Secret: root-level values are copied into os.environ,
+    where src/config.py reads them. A value already in the environment is kept."""
+    import os
+
+    monkeypatch.delenv("LABEXTRACT_TEST_SECRET", raising=False)
+    monkeypatch.setenv("LABEXTRACT_TEST_KEPT", "from-env")
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.secrets["LABEXTRACT_TEST_SECRET"] = "from-secrets"
+    at.secrets["LABEXTRACT_TEST_KEPT"] = "from-secrets"
+    at.run()
+    assert not at.exception
+    assert os.environ["LABEXTRACT_TEST_SECRET"] == "from-secrets" and os.environ["LABEXTRACT_TEST_KEPT"] == "from-env"
+    monkeypatch.delenv("LABEXTRACT_TEST_SECRET")

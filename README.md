@@ -1,18 +1,71 @@
 # LabExtract
 
-Extracts patient commitment-form data for the Central Virology Laboratory (Israeli Ministry of Health):
-batch upload → split into forms → identify form type → extract fields → validate → review → Excel export.
+Turns the commitment forms ("טופסי התחייבות") that reach the Central Virology Laboratory (Israeli Ministry of
+Health) - printed, scanned, photographed or handwritten - into structured records: one record per commitment
+number, every uncertain field marked in orange for the reviewer, nothing guessed.
 
-> Full setup instructions and pipeline description will be added here.
+## How it works
+
+1. **Input** - drag in one file or a whole batch: PDF (many forms per file), scans (TIFF, multi-page too) and phone
+   photos (PNG / JPG; the EXIF orientation is applied). PDF pages are rendered at 300 DPI (Poppler).
+2. **Clean-up** - each page is straightened (deskew), and dark or faded scans get contrast and brightness fixes; the
+   original pixels are kept for the crops shown to the reviewer (`src/image_preprocessor.py`).
+3. **Split** - Claude looks at each page once: upright or rotated, new form or a continuation of the previous one
+   (`src/form_splitter.py`).
+4. **Form type and fields** - one Claude request per form (Opus, with thinking, structured JSON output): the form
+   type (Clalit, Maccabi, Meuhedet, Leumit, a hospital...), the 7 fields, a confidence label per field and where on
+   the page each value was read. The sender must be chosen from the closed list in `approved_senders.json`
+   (`src/extraction_engine.py`, prompt in `prompts/extraction_prompt.txt`).
+5. **Second look** - flagged numbers and handwritten names are cut from the 300 DPI page and read again at high
+   resolution; code - not the model - decides what is approved (`src/field_reread.py`, name check).
+6. **Normalize and check** - pure Python: ID check digit, dates to DD/MM/YYYY (day first, never swapped), central
+   numbers, sender matching with aliases, date window. A field is flagged when it is missing, fails a check, or its
+   confidence is not high (`src/validators.py`, `src/record_builder.py`).
+7. **Review** - a summary table (one row per commitment, orange = check this), then one screen per form: the form
+   image beside one card per field with the image crop the value was read from, an edit box and the reason for the
+   flag. "Approve" re-validates; the record is saved in the local database (SQLite) and can be searched, filtered
+   and reopened later. Excel export is optional.
+8. **Archive assistant** - a side chat on every screen answers questions in Hebrew about the stored records,
+   computed from the database, never invented (see below).
+
+The model reads; code decides. A field the engine is not sure of is left empty and flagged rather than filled with
+a guess, and unverified readings are shown only as an orange "suggestion".
+
+## Setup (local)
+
+Python 3.10+. Poppler is needed for PDFs (Windows: download Poppler, add its `bin` folder to PATH or set
+`POPPLER_PATH` in `.env`; macOS: `brew install poppler`; Linux: `apt install poppler-utils`).
+
+```bash
+python -m venv .venv
+.venv/Scripts/activate          # Windows; macOS / Linux: source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env            # then set CLAUDE_API_KEY
+```
 
 ## Running the app
 
 ```bash
-.venv/Scripts/activate          # Windows; macOS / Linux: source .venv/bin/activate
-streamlit run app.py            # opens http://localhost:8501
+streamlit run app.py --server.address localhost     # opens http://localhost:8501, reachable from this computer only
+pytest                                              # unit tests (no API calls)
 ```
 
-`.env` must hold `CLAUDE_API_KEY` (or `ANTHROPIC_API_KEY`; see `.env.example`); PDFs need Poppler.
+`.env` must hold `CLAUDE_API_KEY` (or `ANTHROPIC_API_KEY`; see `.env.example`).
+
+## Deploying to the cloud (Streamlit Community Cloud)
+
+1. On share.streamlit.io: "Create app" -> this GitHub repository, branch `main`, main file `app.py`, Python 3.12.
+2. Under "Advanced settings" -> Secrets, enter the key (root-level values become environment variables; see
+   `_secrets_to_env` in `app.py`):
+   ```toml
+   CLAUDE_API_KEY = "..."
+   ```
+   Optional settings go there too (e.g. `CLAUDE_MODEL`). Limit the spend on the Anthropic Console: a run costs about
+   $0.15-0.30 per form on Opus at high effort.
+3. `packages.txt` installs Poppler and `requirements.txt` the Python packages (OpenCV headless) automatically.
+
+On a public deployment upload only the fictitious sample forms: the database there is shared by everyone who opens
+the link, and it is reset whenever the app restarts.
 
 ## Model: Claude
 
@@ -81,9 +134,10 @@ measured on the samples may not carry over.
 - A field failing a check gets one targeted re-read from its high-resolution crop; if it still fails it stays
   flagged (orange in the review screen and in the Excel export). Values are never changed silently.
 
-1. **Upload** – drag in PDFs / phone photos (many forms per file are fine) and press "חלץ". A progress bar
+1. **Upload** – drag in PDFs / scans (TIFF) / phone photos (many forms per file are fine) and press "חלץ". A progress bar
    follows the split and then each form. The model is called only here.
-2. **Summary** – one row per form: form type, number of fields to review, form warnings, status. Click a row.
+2. **Summary** – tiles (forms, fields to review, form warnings, approved) and one row per commitment with every
+   field, orange on the fields to review. Click a row to open its form.
 3. **Review** – the form image on one side; on the other, one card per field with the value, the image crop the
    value was read from, an edit box, and the reason for any flag (orange). Unverified handwritten names are never
    filled in: the reading is shown as "הצעה – לא מאומת" for the reviewer to copy in only if it is right. The sender
@@ -141,12 +195,33 @@ Privacy: uploads live only in the browser session's memory (`st.session_state`),
 or on disk; the pipeline's temp folder is deleted after every run. The one exception
 is the database above: it holds patient data on disk (git-ignored, local only), so keep the folder on an
 access-controlled machine and use "מחק את כל המאגר" before sharing the project. "נקה הכל" drops
-everything. `.streamlit/config.toml` serves the app on `localhost` only and turns off Streamlit's usage statistics;
-open it to other lab computers only deliberately, on a trusted network.
+everything. Start the app with `--server.address localhost` on a lab computer so only that computer can connect
+(the address is not fixed in `.streamlit/config.toml`, because a cloud host must reach the app); the config turns
+off Streamlit's usage statistics.
 
 Streamlit limits: `st.data_editor` cannot colour single cells, so editing happens per form in field cards (orange
 via CSS) and the read-only tables use a pandas Styler. Field inputs sit in an `st.form` (Enter never submits), so
 typing does not rerun the script; saved values are kept in `src/review_session.py`, which is pure Python and tested.
+
+## Results on the sample files (honest report)
+
+Measured on the 12 sample forms of `data/ground_truth/ground_truth_draft.csv` (both sample PDFs), exact match after
+normalization, last complete run 2026-10-19 (engine `3fdbbd4`, Opus 5.5, high effort):
+
+| Field | Correct | Flagged for review when not correct | Wrong and NOT flagged |
+|---|---|---|---|
+| Sending entity | 12/12 | – | 0 |
+| Central number | 11/12 | 1 | 0 |
+| Commitment number | 11/12 | 1 (left empty) | 0 |
+| Received date | 10/12 | 2 | 0 |
+| ID number | 7/12 | 5 | 0 |
+| First name / last name | 1/12 each | 11 each (left empty; correct unverified suggestion on 4 / 2 forms) | 0 |
+| **All fields** | **53/84** | **31** | **0** |
+
+What works well: printed numbers, stickers, stamps and the sender. What is still hard: handwritten names (on the
+samples every name is a handwritten placeholder written over the original) and handwritten ID digits. Every miss
+was left empty or flagged; none was a silent guess. Later engine changes (highlight crops, name crops, the ID rule
+below) have been checked on the cached forms only (0 silent errors); a full re-run costs about $2-4.
 
 ## Known limitations
 
@@ -170,9 +245,9 @@ typing does not rerun the script; saved values are kept in `src/review_session.p
 - Unreadable numbers: the targeted re-read lists candidate readings (one per way of reading an unclear digit).
   Code keeps only candidates that pass validation (ID check digit, 6-digit central number); a single one is shown as
   a suggestion, several as alternatives. The field stays empty and flagged until the reviewer confirms.
-- Claude declines to read Hebrew cursive often: such fields stay empty and flagged (never guessed). On the 15
-  draft-labelled forms Opus 5.5 with thinking (no crops) got 69/105 fields right with 0 silent errors; names were
-  the weak field (1/15).
+- Claude declines to read Hebrew cursive often: such fields stay empty and flagged (never guessed).
+- The ID check digit cannot tell leading zeros apart, so two agreeing readings confirm an ID only when it has all
+  9 digits; a shorter reading stays flagged.
 - Earlier baseline: Gemini 3.6 Flash scored 29/35 on 5 forms; replaced by Claude for accuracy and privacy.
 
 ## What the lab needs in order to adopt it

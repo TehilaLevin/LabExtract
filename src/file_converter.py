@@ -14,13 +14,13 @@ from typing import Iterable, Iterator, Union
 
 from pdf2image import convert_from_path
 from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError, PDFSyntaxError
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageOps, ImageSequence, UnidentifiedImageError
 
 from src import config
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_EXTENSIONS = frozenset({".pdf", ".png", ".jpg", ".jpeg"})
+SUPPORTED_EXTENSIONS = frozenset({".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"})
 # Photos are capped at A4 @ 300 dpi, the same detail level as converted PDF pages.
 MAX_IMAGE_SIDE = 3508
 _JPEG_QUALITY = 95
@@ -130,20 +130,24 @@ def _convert_pdf(name: str, path: Union[Path, None], data: Union[bytes, None],
 
 def _convert_image(name: str, path: Union[Path, None], data: Union[bytes, None],
                    run_dir: Path, file_index: int) -> list:
+    """One page per image; a multi-page TIFF (a scanner's batch) gives one page per frame."""
+    pages = []
     try:
-        with Image.open(path if path is not None else BytesIO(data)) as im:
-            im = ImageOps.exif_transpose(im)  # phone photos: apply EXIF orientation
-            im = _to_rgb(im)
+        with Image.open(path if path is not None else BytesIO(data)) as source:
+            for number, frame in enumerate(ImageSequence.Iterator(source), start=1):
+                im = ImageOps.exif_transpose(frame)  # phone photos: apply EXIF orientation
+                im = _to_rgb(im)
+                im.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.LANCZOS)
+                out = run_dir / f"f{file_index:03d}_p{number}.jpg"
+                im.save(out, "JPEG", quality=_JPEG_QUALITY)
+                pages.append(Page(name, number, out))
     except UnidentifiedImageError as exc:
         raise ValueError(f"Could not read image: {name}") from exc
-    im.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.LANCZOS)
-    out = run_dir / f"f{file_index:03d}_p1.jpg"
-    im.save(out, "JPEG", quality=_JPEG_QUALITY)
-    return [Page(name, 1, out)]
+    return pages
 
 
 def convert_files(files: Union[FileInput, Iterable[FileInput]], run_dir: Union[Path, None] = None) -> list:
-    """Convert one or many PDF/PNG/JPG/JPEG inputs into a flat list of Page objects.
+    """Convert one or many PDF/PNG/JPG/JPEG/TIFF inputs into a flat list of Page objects.
 
     Pages keep input order; page_number is 1-based within its source file.
     """
@@ -155,7 +159,7 @@ def convert_files(files: Union[FileInput, Iterable[FileInput]], run_dir: Union[P
         name, path, data = _read_input(item)
         ext = Path(name).suffix.lower()
         if ext not in SUPPORTED_EXTENSIONS:
-            raise ValueError(f"Unsupported file type '{ext}' ({name}). Use PDF, PNG, JPG or JPEG.")
+            raise ValueError(f"Unsupported file type '{ext}' ({name}). Use PDF, PNG, JPG, JPEG or TIFF.")
         convert = _convert_pdf if ext == ".pdf" else _convert_image
         file_pages = convert(name, path, data, run_dir, index)
         logger.info("Converted file #%d (%s): %d page(s)", index + 1, ext, len(file_pages))

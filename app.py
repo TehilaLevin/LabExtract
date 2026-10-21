@@ -24,6 +24,7 @@ Streamlit limits and how they are handled:
 """
 import base64
 import html
+import os
 import threading
 import uuid
 import time
@@ -34,10 +35,26 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from src import archive_assistant as aa
-from src import config
-from src import record_store
-from src import review_session as rs
+
+def _secrets_to_env() -> None:
+    """Streamlit Community Cloud: the API key and settings are entered as the app's Secrets. Their root-level values
+    are copied into the environment, where src/config.py reads them, before src is imported. Locally there is no
+    secrets file and .env is used; a value already in the environment always wins."""
+    try:
+        items = dict(st.secrets)
+    except Exception:  # no secrets file
+        return
+    for key, value in items.items():
+        if key.isupper() and isinstance(value, (str, int, float, bool)):
+            os.environ.setdefault(key, str(value))
+
+
+_secrets_to_env()
+
+from src import archive_assistant as aa  # noqa: E402 - after the secrets are in the environment
+from src import config  # noqa: E402
+from src import record_store  # noqa: E402
+from src import review_session as rs  # noqa: E402
 from src.constants import (
     ALL_HEADERS,
     FIELD_HEADERS,
@@ -115,7 +132,7 @@ PARTNER_HTML = f"""
 """
 PRIVACY_NOTE = ('<div class="lx-privacy">הקבצים שהועלו נמחקים בסיום החילוץ. הרשומות נשמרות במחשב הזה בלבד '
                 'ואפשר למחוק אותן במסך המאגר. שום נתון אישי לא נכתב ליומן.</div>')
-UPLOAD_TYPES = ["pdf", "png", "jpg", "jpeg"]
+UPLOAD_TYPES = ["pdf", "png", "jpg", "jpeg", "tif", "tiff"]
 DEV_CACHE_BANNER = ("**מצב פיתוח: DEV_CACHE פעיל.** תשובות המודל (שעלולות לכלול נתונים אישיים) נשמרות בדיסק "
                     "בתיקייה data/dev_cache, כדי שהרצה חוזרת על אותם עמודים לא תעלה כסף. "
                     "לקבצי הדוגמה בלבד – אסור להעלות טפסים אמיתיים במצב זה.")
@@ -171,7 +188,7 @@ div[class*="st-key-cardflag_"] {{
     content: "גררו קבצים לכאן"; display: block; font-size: 20px; font-weight: 600; color: #1B1A6B;
 }}
 [data-testid="stFileUploaderDropzoneInstructions"] > div::after {{
-    content: "PDF · PNG · JPG · JPEG · עד 500MB לקובץ"; display: block; font-size: 12px; color: #5F6E82; margin-top: 6px;
+    content: "PDF · PNG · JPG · TIFF · עד 500MB לקובץ"; display: block; font-size: 12px; color: #5F6E82; margin-top: 6px;
 }}
 [data-testid="stFileUploaderDropzone"] button p {{ font-size: 0; }}
 [data-testid="stFileUploaderDropzone"] button p::after {{ content: "בחירה מהמחשב"; font-size: 14px; }}
@@ -605,8 +622,12 @@ def _field_card(review: rs.FormReview, key: str, senders: list, nonce: int) -> o
                 if len(rec.page_images) > 1 and crop.page <= len(rec.page_images):
                     caption = f"עמוד {rec.page_images[crop.page - 1].page_number}"
                 st.image(crop.jpeg, caption=caption, width="stretch")
-            if not crops and not rec.error:
-                st.caption("אין חיתוך מקור: המודל לא סימן היכן הערך מופיע בטופס.")
+            if not crops and rec.error:
+                st.caption("החילוץ נכשל, ולכן אין חיתוך. השוו מול תמונת הטופס שליד.")
+            elif not crops and not review.value(key) and not rec.suggestions.get(key):
+                st.caption("הערך לא נמצא בטופס, ולכן אין מה לחתוך. ודאו בתמונת הטופס שליד.")
+            elif not crops:
+                st.caption("אין חיתוך: המנוע לא סימן היכן הערך מופיע. השוו מול תמונת הטופס שליד.")
 
         with input_col:
             input_key = f"in_{review.form_index}_{key}_{nonce}"
@@ -913,7 +934,7 @@ def _source_line() -> str:
     if Path(config.DB_PATH).resolve() != DEFAULT_DB_PATH.resolve():
         return (f'<div class="lx-chat-source alt">⚠ מאגר חלופי: {html.escape(Path(config.DB_PATH).name)}{count}'
                 '</div>')
-    return f'<div class="lx-chat-source">מקור הנתונים: מאגר הרשומות במחשב הזה{count}</div>'
+    return f'<div class="lx-chat-source">מקור הנתונים: מאגר הרשומות של המערכת{count}</div>'
 
 
 def _answer_question(question: str) -> dict:

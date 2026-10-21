@@ -127,3 +127,18 @@ def test_cleanup_removes_run_dir_and_keeps_gitkeep(temp_dir):
     fc.cleanup_temp()
     assert not run_dir.exists()
     assert (temp_dir / ".gitkeep").exists()
+
+
+def test_multi_page_tiff_gives_one_page_per_frame(tmp_path):
+    """Scanners save a batch as one multi-page TIFF."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from src.file_converter import convert_files
+
+    buf = BytesIO()
+    frames = [Image.new("RGB", (200, 300), c) for c in ("white", "gray", "black")]
+    frames[0].save(buf, "TIFF", save_all=True, append_images=frames[1:])
+    pages = convert_files(("scan.tiff", buf.getvalue()), run_dir=tmp_path)
+    assert [(p.source_file, p.page_number) for p in pages] == [("scan.tiff", 1), ("scan.tiff", 2), ("scan.tiff", 3)]

@@ -16,3 +16,6 @@ data/db/
 data/handwriting_test/*
 !data/handwriting_test/.gitkeep
 
+
+# Streamlit secrets (API key on a cloud deployment)
+.streamlit/secrets.toml
