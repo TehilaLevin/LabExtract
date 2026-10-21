@@ -495,16 +495,21 @@ def overview_section(counts: dict) -> None:
         for k in overview.KIND_LABELS if kinds[k]["count"])
     st.markdown(f'<div class="lx-tiles">{tiles}</div>', unsafe_allow_html=True)
     frame = pd.DataFrame(rows)
+    total = int(frame["count"].sum())
+    st.markdown(f'<div class="lx-muted">סה״כ {total} טפסים מאושרים; האחוזים מחושבים מתוך סכום זה.</div>',
+                unsafe_allow_html=True)
     hover = alt.selection_point(fields=["name"], on="pointerover", clear="pointerout")
-    chart = (alt.Chart(frame).mark_bar(cornerRadiusEnd=4, size=16)
-             .encode(x=alt.X("count:Q", title="מספר טפסים", axis=alt.Axis(tickMinStep=1, format="d")),
-                     y=alt.Y("name:N", sort=None, title=None),
-                     color=alt.Color("kind_label:N", title="סוג",
-                                     scale=alt.Scale(domain=list(OVERVIEW_COLORS), range=list(OVERVIEW_COLORS.values()))),
-                     opacity=alt.condition(hover, alt.value(1), alt.value(0.6)),
-                     tooltip=[alt.Tooltip("name:N", title="גורם"), alt.Tooltip("kind_label:N", title="סוג"),
-                              alt.Tooltip("count:Q", title="טפסים"), alt.Tooltip("percent:Q", title="אחוז מהסך", format=".1f")])
-             .add_params(hover).properties(height=max(120, 28 * len(frame))))
+    base = alt.Chart(frame).encode(
+        y=alt.Y("name:N", sort="-x", title=None),
+        x=alt.X("count:Q", title="מספר טפסים", axis=alt.Axis(tickMinStep=1, format="d")))
+    bars = base.mark_bar(cornerRadiusEnd=4, size=16).encode(
+        color=alt.Color("kind_label:N", title="סוג",
+                        scale=alt.Scale(domain=list(OVERVIEW_COLORS), range=list(OVERVIEW_COLORS.values()))),
+        opacity=alt.condition(hover, alt.value(1), alt.value(0.6)),
+        tooltip=[alt.Tooltip("name:N", title="גורם"), alt.Tooltip("kind_label:N", title="סוג"),
+                 alt.Tooltip("count:Q", title="טפסים"), alt.Tooltip("percent:Q", title="אחוז מהסך", format=".1f")])
+    labels = base.mark_text(align="left", dx=4).encode(text=alt.Text("count:Q", format="d"))
+    chart = (bars + labels).add_params(hover).properties(height=max(120, 28 * len(frame)))
     st.altair_chart(chart, width="stretch")
     with st.expander("תצוגת טבלה"):
         table = frame.rename(columns={"name": "גורם", "kind_label": "סוג", "count": "טפסים", "percent": "אחוז"})
